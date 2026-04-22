@@ -1,7 +1,7 @@
 {
-    "name": "windy-plugin-template",
-    "version": "5.0.1",
-    "description": "Template for developing Windy Plugins",
+    "name": "windy-plugin-hiking-forecast",
+    "version": "0.1.0",
+    "description": "Windy plugin combining temperature, wind, clouds, and rain into a hiking forecast overlay.",
     "main": "dist/plugin.min.js",
     "type": "module",
     "scripts": {
@@ -20,19 +20,19 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/windycom/windy-plugin-template.git"
+        "url": "git+https://github.com/mima-hlavacek/windy-hiking-forecast.git"
     },
     "keywords": [
         "windy",
         "windy.com",
         "plugins"
     ],
-    "author": "Windyty, S.E.",
+    "author": "Míma Hlaváček",
     "license": "ISC",
     "bugs": {
-        "url": "https://github.com/windycom/windy-plugin-template/issues"
+        "url": "https://github.com/mima-hlavacek/windy-hiking-forecast/issues"
     },
-    "homepage": "https://docs.windy-plugins.com/",
+    "homepage": "https://github.com/mima-hlavacek/windy-hiking-forecast#readme",
     "dependencies": {
         "@windycom/plugin-devtools": "^3.0.3"
     }

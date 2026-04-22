@@ -1,16 +1,17 @@
 import type { ExternalPluginConfig } from '@windy/interfaces';
 
 const config: ExternalPluginConfig = {
-    name: 'windy-plugin-my-plugin',
+    name: 'windy-plugin-hiking-forecast',
     version: '0.1.0',
-    icon: '🔌',
-    title: 'This is my first plugin',
-    description: 'This is my first plugin.',
-    author: 'John Doe (optional company name)',
-    repository: 'https://github.com/windycom/windy-plugin-template',
-    desktopUI: 'rhpane',
-    mobileUI: 'fullscreen',
-    routerPath: '/my-plugin',
+    icon: '🥾',
+    title: 'Hiking Forecast',
+    description: 'Combined forecast showing temperature, wind, clouds, and rain.',
+    author: 'Míma Hlaváček',
+    repository: 'https://github.com/mima-hlavacek/windy-hiking-forecast',
+    desktopUI: 'embedded',
+    mobileUI: 'small',
+    routerPath: '/hiking-forecast',
+    listenToSingleclick: true,
     private: true,
 };
 

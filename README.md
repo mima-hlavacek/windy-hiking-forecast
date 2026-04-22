@@ -1,58 +1,29 @@
-# Windy Plugin Template
+# Hiking Forecast Windy Plugin
 
-Template for development of Windy Plugins.
+Windy plugin for evaluating hiking conditions at a glance by combining:
 
-**Documentation at: [https://docs.windy-plugins.com/](https://docs.windy-plugins.com/)**
+- temperature from the active Windy overlay
+- wind speed and direction
+- cloud cover
+- rain intensity
 
-**Documentation for the Leaflet GL library is at [https://windycom.github.io/LeafletGL/docs/](https://windycom.github.io/LeafletGL/docs/)**
+The plugin renders a compact embedded panel and supports Windy's single-click picker for inspecting a chosen location on the map.
 
-## Quick start
+## Development
 
 - Install dependencies with `npm i`
-- Compile the plugin in watch mode with `npm start`
-- Navigate to <https://www.windy.com/developer-mode>
-- Load your plugin from the URL <https://localhost:9999/plugin.js>
-- Code away!
+- Start local development with `npm start`
+- Open <https://www.windy.com/developer-mode>
+- Load the plugin from <https://localhost:9999/plugin.js>
 
-For running the examples:
+## Publishing
 
-- Build the desired example in watch mode with `npm run example01` (or `example02`, etc.)
-- Load the example in Windy's developer mode using the URL <https://localhost:9999/example01/plugin.js>
+Plugin metadata is defined in [src/pluginConfig.ts](src/pluginConfig.ts), and package metadata is kept in `package.json` for Windy publishing compatibility.
 
-## Known issues
+To publish through GitHub Actions:
 
-- In *example03* the boat orientation resets after the user zooms.
-This is likely related to Leaflet GL executing `zoom` events in slightly different order.
-Markers now also internally subscribe to the map's `zoom` event to update their CSS positioning,
-which likely executes *after* the user's `zoom` event in this example.
-- In *example04* map clicks within the rendered cycle do not fire the `singleclick` event, as they have before Leaflet LG.
+- increment the version in both `src/pluginConfig.ts` and `package.json`
+- run the `publish-plugin` workflow
+- use the plugin URL emitted by the workflow logs
 
-## CHANGELOG
-
--   5.0.0
-    -   Updated example code for the new Leaflet GL map library introduced in client v49.0.0
--   4.2.2
-    -   New plugins are marked as private by default
--   4.2.1
-    -   Updated `@windycom/plugin-devtools` for client v46.1.0
--   4.2.0
-    -   Fixed compiler sourcemap error
--   4.1.0
-    -   Updated plugin upload URL
--   4.0.0
-    -   Updated `@windycom/plugin-devtools` for client v45.0.0
--   3.0.0
-    -   Updated `@windycom/plugin-devtools` for client v42.2.0
--   2.0.0
-    -   Completely new version of the plugin system based in Windy client v42+
--   1.0.0
-    -   New rollup compiler, no more riot architecture
-    -   Updated examples for Windy client v39
--   0.4.0
-    -   Added `plugin-data-loader` to the Plugins API
--   0.3.0
-    -   Examples moved to examples dir
--   0.2.0
-    -   Fixed wrong examples
--   0.1.1
-    -   Initial version of this repo
+Windy publishing guide: <https://docs.windy-plugins.com/getting-started/publishing-plugin.html>

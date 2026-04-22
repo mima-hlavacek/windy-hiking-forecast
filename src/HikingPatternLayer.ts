@@ -1,0 +1,382 @@
+import { layerOrder } from '@windy/map';
+import { whichTile } from '@windy/renderUtils';
+import { extractTileHeader } from '@windy/tileLayerSource';
+import { decodedTileDataSize, imageBitmapToUint8Array } from '@windy/TileLayerUtils';
+import { renderPatternTile } from './tilePatternRenderer';
+import type { FullRenderParameters } from '@windy/interfaces.d';
+import type { TileParams } from '@windy/Renderer';
+
+interface DecodedTileImage {
+    channelR: Float32Array;
+    channelG: Float32Array;
+    width: number;
+    height: number;
+}
+
+interface DecodedTile {
+    cloudTile: DecodedTileImage;
+    windTileInfo: TileParams;
+    patternCanvas: CanvasImageSource;
+    cloudSubX: number;
+    cloudSubY: number;
+    cloudSubW: number;
+    cloudSubH: number;
+    cloudTileX: number;
+    cloudTileY: number;
+    cloudTileZ: number;
+}
+
+interface SampledValues {
+    cloudPercent: number;
+    rainMm: number;
+    windU: number;
+    windV: number;
+}
+
+const TILE_RES = 256;
+const LAYER_BUCKET_ID = layerOrder.MAIN + Math.round((layerOrder.PARTICLES - layerOrder.MAIN) / 2);
+
+async function fetchAndDecodeTile(
+    tileInfo: TileParams,
+): Promise<DecodedTileImage | null> {
+    const response = await fetch(tileInfo.url);
+    if (!response.ok) {
+        return null;
+    }
+
+    const blob = await response.blob();
+    const imageBitmapWithHeader = await createImageBitmap(blob);
+    const { image, header } = await extractTileHeader(imageBitmapWithHeader);
+    imageBitmapWithHeader.close();
+
+    const data = imageBitmapToUint8Array(image);
+    const width = image.width;
+    const height = image.height;
+    const pixelCount = width * height;
+    const channelR = new Float32Array(pixelCount);
+    const channelG = new Float32Array(pixelCount);
+    image.close();
+
+    for (let i = 0; i < pixelCount; i++) {
+        const srcIdx = i * 4;
+        const rawR = data[srcIdx];
+        const rawG = data[srcIdx + 1];
+        const decodedR = rawR * header.decoderRstep + header.decoderRmin;
+        const decodedG = rawG * header.decoderGstep + header.decoderGmin;
+        channelR[i] = tileInfo.transformR ? tileInfo.transformR(decodedR) : decodedR;
+        channelG[i] = tileInfo.transformG ? tileInfo.transformG(decodedG) : decodedG;
+    }
+
+    return { channelR, channelG, width, height };
+}
+
+function sampleBilinearChannel(
+    srcPixels: Float32Array,
+    srcWidth: number,
+    fx: number,
+    fy: number,
+): number {
+    const x0 = Math.floor(fx);
+    const y0 = Math.floor(fy);
+    const x1 = Math.min(x0 + 1, srcWidth - 1);
+    const y1 = Math.min(y0 + 1, srcWidth - 1);
+    const dx = fx - x0;
+    const dy = fy - y0;
+
+    const tl = srcPixels[y0 * srcWidth + x0];
+    const tr = srcPixels[y0 * srcWidth + x1];
+    const bl = srcPixels[y1 * srcWidth + x0];
+    const br = srcPixels[y1 * srcWidth + x1];
+
+    const top = tl + (tr - tl) * dx;
+    const bot = bl + (br - bl) * dx;
+    return top + (bot - top) * dy;
+}
+
+function getMercatorCoords(lat: number, lon: number): { mercX: number; mercY: number } {
+    const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+    const latRad = clampedLat * Math.PI / 180;
+    const mercY = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2;
+    const wrappedLon = ((lon + 180) % 360 + 360) % 360;
+    const mercX = wrappedLon / 360;
+    return { mercX, mercY };
+}
+
+function getTileCoordsAtZoom(mercX: number, mercY: number, zoom: number): { x: number; y: number } {
+    const n = Math.pow(2, zoom);
+    return {
+        x: Math.floor(mercX * n),
+        y: Math.max(0, Math.min(n - 1, Math.floor(mercY * n))),
+    };
+}
+
+function sampleLayerTile(
+    decodedTile: DecodedTileImage,
+    mercX: number,
+    mercY: number,
+    tileX: number,
+    tileY: number,
+    tileZ: number,
+): { r: number; g: number; b: number } {
+    const n = Math.pow(2, tileZ);
+    const pixelX = (mercX * n - tileX) * decodedTileDataSize;
+    const pixelY = (mercY * n - tileY) * decodedTileDataSize;
+    const fx = Math.max(0, Math.min(pixelX, decodedTileDataSize - 1));
+    const fy = Math.max(0, Math.min(pixelY, decodedTileDataSize - 1));
+
+    return {
+        r: sampleBilinearChannel(decodedTile.channelR, decodedTile.width, fx, fy),
+        g: sampleBilinearChannel(decodedTile.channelG, decodedTile.width, fx, fy),
+        b: Number.NaN,
+    };
+}
+
+function sampleDecodedTile(
+    tile: DecodedTile,
+    mercX: number,
+    mercY: number,
+    windTile?: DecodedTileImage | null,
+): SampledValues {
+    const cloudValues = sampleLayerTile(
+        tile.cloudTile,
+        mercX,
+        mercY,
+        tile.cloudTileX,
+        tile.cloudTileY,
+        tile.cloudTileZ,
+    );
+    const windValues = windTile
+        ? sampleLayerTile(
+            windTile,
+            mercX,
+            mercY,
+            tile.windTileInfo.x,
+            tile.windTileInfo.y,
+            tile.windTileInfo.z,
+        )
+        : null;
+
+    return {
+        cloudPercent: cloudValues.r,
+        rainMm: cloudValues.g,
+        windU: windValues?.r ?? Number.NaN,
+        windV: windValues?.g ?? Number.NaN,
+    };
+}
+
+class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
+    readonly renderKey: string;
+    private readonly cloudsParams: FullRenderParameters;
+    private readonly windParams: FullRenderParameters;
+    private readonly cloudTilePromises = new Map<string, Promise<DecodedTileImage | null>>();
+    private readonly windTilePromises = new Map<string, Promise<DecodedTileImage | null>>();
+    private redrawQueued = false;
+
+    constructor(renderKey: string, cloudsParams: FullRenderParameters, windParams: FullRenderParameters) {
+        super(
+            {
+                bucketId: LAYER_BUCKET_ID,
+                minZoom: 0,
+                maxZoom: 18,
+            },
+            (coords, abort) => this.loadTileData(coords, abort),
+        );
+        this.renderKey = renderKey;
+        this.cloudsParams = cloudsParams;
+        this.windParams = windParams;
+
+        this.on('tileloaded', () => {
+            if (this.redrawQueued) {
+                return;
+            }
+
+            this.redrawQueued = true;
+            requestAnimationFrame(() => {
+                this.redrawQueued = false;
+                this.redraw();
+            });
+        });
+    }
+
+    protected _drawTile(
+        ctx: CanvasRenderingContext2D,
+        tileData: DecodedTile,
+        _targetZoom: number,
+        _tileZ: number,
+        tileStartX: number,
+        tileStartY: number,
+        tileWidth: number,
+        tileHeight: number,
+    ): void {
+        ctx.drawImage(tileData.patternCanvas, tileStartX, tileStartY, tileWidth, tileHeight);
+    }
+
+    private async getDecodedTile(
+        tileInfo: TileParams,
+        abort: AbortSignal | undefined,
+        promiseCache: Map<string, Promise<DecodedTileImage | null>>,
+    ): Promise<DecodedTileImage | null> {
+        if (abort?.aborted) {
+            throw new Error('aborted');
+        }
+
+        let pending = promiseCache.get(tileInfo.url);
+        if (!pending) {
+            pending = fetchAndDecodeTile(tileInfo);
+            promiseCache.set(tileInfo.url, pending);
+        }
+
+        try {
+            const decodedTile = await pending;
+            if (!decodedTile) {
+                promiseCache.delete(tileInfo.url);
+            }
+            if (abort?.aborted) {
+                throw new Error('aborted');
+            }
+            return decodedTile;
+        } catch (error) {
+            promiseCache.delete(tileInfo.url);
+            if (abort?.aborted) {
+                throw new Error('aborted');
+            }
+            throw error;
+        }
+    }
+
+    private async loadTileData(coords: L.Coords, abort: AbortSignal): Promise<DecodedTile | null> {
+        try {
+            const cloudTileInfo = whichTile(coords, this.cloudsParams);
+            const windTileInfo = whichTile(coords, this.windParams);
+            if (!cloudTileInfo || !windTileInfo) {
+                return null;
+            }
+
+            const cloudTile = await this.getDecodedTile(cloudTileInfo, abort, this.cloudTilePromises);
+            if (!cloudTile) {
+                return null;
+            }
+
+            const tilesPerSide = Math.max(1, Math.round(cloudTileInfo.trans));
+            const localX = coords.x - cloudTileInfo.x * tilesPerSide;
+            const localY = coords.y - cloudTileInfo.y * tilesPerSide;
+            const cloudSubW = decodedTileDataSize / tilesPerSide;
+            const cloudSubH = decodedTileDataSize / tilesPerSide;
+            const cloudSubX = localX * cloudSubW;
+            const cloudSubY = localY * cloudSubH;
+
+            const tileData: DecodedTile = {
+                cloudTile,
+                windTileInfo,
+                patternCanvas: document.createElement('canvas'),
+                cloudSubX,
+                cloudSubY,
+                cloudSubW,
+                cloudSubH,
+                cloudTileX: cloudTileInfo.x,
+                cloudTileY: cloudTileInfo.y,
+                cloudTileZ: cloudTileInfo.z,
+            };
+            tileData.patternCanvas = await renderPatternTile({
+                channelR: cloudTile.channelR,
+                channelG: cloudTile.channelG,
+                width: cloudTile.width,
+                height: cloudTile.height,
+                subX: cloudSubX,
+                subY: cloudSubY,
+                subW: cloudSubW,
+                subH: cloudSubH,
+                tileRes: TILE_RES,
+            });
+            if (abort.aborted) {
+                throw new Error('aborted');
+            }
+            return tileData;
+        } catch (error) {
+            if (
+                abort.aborted ||
+                (error instanceof DOMException && error.name === 'AbortError') ||
+                (error instanceof Error && error.message.includes('aborted'))
+            ) {
+                throw new Error('aborted');
+            }
+            return null;
+        }
+    }
+
+    private sampleDecodedTileWithCachedWind(tile: DecodedTile, mercX: number, mercY: number): SampledValues {
+        return sampleDecodedTile(tile, mercX, mercY);
+    }
+
+    private async sampleDecodedTileWithWind(
+        tile: DecodedTile,
+        mercX: number,
+        mercY: number,
+        abort?: AbortSignal,
+    ): Promise<SampledValues | null> {
+        const windTile = await this.getDecodedTile(tile.windTileInfo, abort, this.windTilePromises);
+        if (!windTile) {
+            return sampleDecodedTile(tile, mercX, mercY);
+        }
+
+        return sampleDecodedTile(tile, mercX, mercY, windTile);
+    }
+
+    private findLoadedTileAtLatLon(mercX: number, mercY: number, mapZoom: number): DecodedTile | null {
+        const requestedZoom = Math.max(0, Math.floor(mapZoom));
+        const exactCoords = getTileCoordsAtZoom(mercX, mercY, requestedZoom);
+        const exactTile = this._tileCache.getData({ ...exactCoords, z: requestedZoom });
+        if (exactTile) {
+            return exactTile;
+        }
+
+        const maxHigherZoom = Math.min(this.options.maxZoom ?? requestedZoom, requestedZoom + 2);
+        for (let z = requestedZoom + 1; z <= maxHigherZoom; z++) {
+            const coords = getTileCoordsAtZoom(mercX, mercY, z);
+            const tile = this._tileCache.getData({ ...coords, z });
+            if (tile) {
+                return tile;
+            }
+        }
+
+        for (let z = requestedZoom - 1; z >= 0; z--) {
+            const coords = getTileCoordsAtZoom(mercX, mercY, z);
+            const tile = this._tileCache.getData({ ...coords, z });
+            if (tile) {
+                return tile;
+            }
+        }
+
+        return null;
+    }
+
+    getValuesAtLatLon(lat: number, lon: number, mapZoom: number): SampledValues | null {
+        const { mercX, mercY } = getMercatorCoords(lat, lon);
+        const tile = this.findLoadedTileAtLatLon(mercX, mercY, mapZoom);
+        return tile ? this.sampleDecodedTileWithCachedWind(tile, mercX, mercY) : null;
+    }
+
+    async awaitValuesAtLatLon(
+        lat: number,
+        lon: number,
+        mapZoom: number,
+        abort?: AbortSignal,
+    ): Promise<SampledValues | null> {
+        const { mercX, mercY } = getMercatorCoords(lat, lon);
+        const loadedTile = this.findLoadedTileAtLatLon(mercX, mercY, mapZoom);
+        if (loadedTile) {
+            return this.sampleDecodedTileWithWind(loadedTile, mercX, mercY, abort);
+        }
+
+        const requestedZoom = Math.max(0, Math.floor(mapZoom));
+        const coords = getTileCoordsAtZoom(mercX, mercY, requestedZoom);
+        const awaitedTile = await this._tileCache.awaitTile({ ...coords, z: requestedZoom }, abort);
+        if (awaitedTile.status !== 'success') {
+            return null;
+        }
+
+        return this.sampleDecodedTileWithWind(awaitedTile.tile, mercX, mercY, abort);
+    }
+}
+
+export default HikingPatternLayer;
