@@ -35,7 +35,8 @@
     import { getDirFunction } from "@windy/format";
     import store from "@windy/store";
     import { map } from "@windy/map";
-    import { singleclick } from "@windy/singleclick";
+    import { singleclick, register as registerSingleclick, release as releaseSingleclick } from "@windy/singleclick";
+    import plugins from "@windy/plugins";
     import { getLatLonInterpolator } from "@windy/interpolator";
     import metrics from "@windy/metrics";
     import overlays from "@windy/overlays";
@@ -49,19 +50,35 @@
     import type { DitherLevel } from './bayer';
 
     import type { FullRenderParameters, LatLon, WeatherParameters } from '@windy/interfaces.d';
-    import type { RGBNumValues } from '@windy/interpolatorTypes';
+    import type { CoordsInterpolationFun, RGBNumValues } from '@windy/interpolatorTypes';
 
     const { title, name } = config;
 
     let patternLayer: HikingPatternLayer | null = null;
     let marker: L.Marker | null = null;
-    let popup: L.Popup | null = null;
     let cloudCanvas: HTMLCanvasElement;
     let rainCanvas: HTMLCanvasElement;
     let rainLegendTicks: LegendTick[] = [];
     let isMounted = false;
     let pickerRequestId = 0;
     let pickerAbort: AbortController | null = null;
+    let cachedInterpolator: CoordsInterpolationFun | null = null;
+
+    interface PickerValues {
+        primaryLabel: string;
+        tempStr: string;
+        windStr: string;
+        cloudsStr: string;
+        rainStr: string;
+    }
+
+    let lastValues: PickerValues = {
+        primaryLabel: 'Temperature',
+        tempStr: '-',
+        windStr: '-',
+        cloudsStr: '-',
+        rainStr: '-',
+    };
     const TEMP_SCALE_YELLOW = { r: 222, g: 192, b: 82 };
     const cloudLegendTicks = createLegendTicks(CLOUD_LEVELS, (index) => getLegendUpperLabel(CLOUD_LEVELS, index));
 
@@ -153,11 +170,20 @@
         ctx.putImageData(imgData, 0, 0);
     }
 
-    const draggableIcon = new L.DivIcon({
-        className: 'hiking-picker-marker',
-        html: '<div class="pulsating-icon repeat"></div>',
-        iconSize: [10, 10],
-        iconAnchor: [5, 5],
+    const flagIcon = new L.DivIcon({
+        className: 'hiking-picker',
+        html: `
+            <div class="hiking-picker-line"></div>
+            <div class="hiking-picker-flag">
+                <div class="hiking-picker-rows" data-ref="rows"></div>
+                <a class="hiking-picker-detail" data-ref="detail" title="Forecast for this location">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </a>
+                <a class="hiking-picker-close" data-ref="close">×</a>
+            </div>
+        `,
+        iconSize: [0, 125],
+        iconAnchor: [0, 125],
     });
 
     function getCurrentWeatherParams(overlay: WeatherParameters['overlay']): WeatherParameters {
@@ -186,12 +212,11 @@
     }
 
     function hideMarker() {
-        if (popup) {
-            if (popup.isOpen()) {
-                popup.close();
-            }
-            popup = null;
+        if (dragThrottleTimer != null) {
+            clearTimeout(dragThrottleTimer);
+            dragThrottleTimer = null;
         }
+        pendingDragLatLon = null;
         if (marker) {
             if (map.hasLayer(marker)) {
                 marker.remove();
@@ -200,89 +225,184 @@
         }
     }
 
+    function ensureMarker(lat: number, lon: number): L.Marker {
+        if (marker) {
+            marker.setLatLng([lat, lon]);
+            return marker;
+        }
+
+        const newMarker = L.marker([lat, lon], {
+            draggable: true,
+            icon: flagIcon,
+            zIndexOffset: 800,
+        }).addTo(map);
+
+        newMarker.on('drag', () => {
+            const { lat: la, lng: ln } = newMarker.getLatLng();
+            scheduleDragUpdate(la, ln);
+        });
+        newMarker.on('dragend', () => {
+            const { lat: la, lng: ln } = newMarker.getLatLng();
+            void showPickerData({ lat: la, lon: ln });
+        });
+
+        const el = newMarker.getElement();
+        const closeBtn = el?.querySelector('[data-ref="close"]');
+        closeBtn?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            hideMarker();
+        });
+
+        const detailBtn = el?.querySelector('[data-ref="detail"]');
+        detailBtn?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const { lat: la, lng: ln } = newMarker.getLatLng();
+            bcast.emit('rqstOpen', 'detail', { lat: la, lon: ln });
+            hideMarker();
+        });
+
+        marker = newMarker;
+        return newMarker;
+    }
+
+    function renderCurrentValues() {
+        const rowsEl = marker?.getElement()?.querySelector('[data-ref="rows"]');
+        if (!rowsEl) return;
+        const { primaryLabel, tempStr, windStr, cloudsStr, rainStr } = lastValues;
+
+        let html = '';
+        html += `<div class="hiking-picker-row"><span class="hiking-picker-label">${primaryLabel}</span><span class="hiking-picker-value">${tempStr}</span></div>`;
+        html += `<div class="hiking-picker-row"><span class="hiking-picker-label">Wind</span><span class="hiking-picker-value">${windStr}</span></div>`;
+        html += `<div class="hiking-picker-row"><span class="hiking-picker-label">Clouds</span><span class="hiking-picker-value">${cloudsStr}</span></div>`;
+        html += `<div class="hiking-picker-row"><span class="hiking-picker-label">Rain</span><span class="hiking-picker-value">${rainStr}</span></div>`;
+        rowsEl.innerHTML = html;
+    }
+
+    function applyAndRender(partial: Partial<PickerValues>) {
+        if (Object.keys(partial).length === 0) return;
+        lastValues = { ...lastValues, ...partial };
+        renderCurrentValues();
+    }
+
+    async function ensureInterpolator(): Promise<CoordsInterpolationFun | null> {
+        if (cachedInterpolator) return cachedInterpolator;
+        try {
+            cachedInterpolator = (await getLatLonInterpolator()) ?? null;
+        } catch {
+            cachedInterpolator = null;
+        }
+        return cachedInterpolator;
+    }
+
+    function extractInterpolatorPartial(values: unknown): Partial<PickerValues> {
+        if (!Array.isArray(values)) return {};
+        const overlayIdent = store.get('overlay') as keyof typeof overlays;
+        const overlayDef = overlays[overlayIdent];
+        if (overlayIdent === 'temp') {
+            return { primaryLabel: 'Temperature', tempStr: metrics.temp.convertValue(values[0]) };
+        }
+        if (overlayDef) {
+            const probe = document.createElement('div');
+            probe.innerHTML = overlayDef.createPickerHTML(values as RGBNumValues, getDirFunction());
+            const tempStr = probe.textContent?.replace(/\s+/g, ' ').trim() || '-';
+            return { primaryLabel: overlayDef.getName(), tempStr };
+        }
+        return {};
+    }
+
+    function extractPatternPartial(vals: ReturnType<HikingPatternLayer['getValuesAtLatLon']>): Partial<PickerValues> {
+        if (!vals) return {};
+        const partial: Partial<PickerValues> = {
+            cloudsStr: `${Math.round(vals.cloudPercent)} %`,
+            rainStr: metrics.rain.convertValue(vals.rainMm),
+        };
+        if (Number.isFinite(vals.windU) && Number.isFinite(vals.windV)) {
+            const { dir, wind } = wind2obj([vals.windU, vals.windV, 0]);
+            partial.windStr = `${metrics.wind.convertValue(wind)} ${Math.round(dir)}°`;
+        }
+        return partial;
+    }
+
+    let dragThrottleTimer: number | null = null;
+    let pendingDragLatLon: LatLon | null = null;
+
+    function scheduleDragUpdate(lat: number, lon: number) {
+        pendingDragLatLon = { lat, lon };
+        if (dragThrottleTimer != null) return;
+        dragThrottleTimer = window.setTimeout(() => {
+            dragThrottleTimer = null;
+            const next = pendingDragLatLon;
+            pendingDragLatLon = null;
+            if (next) updatePickerLive(next.lat, next.lon);
+        }, 100);
+    }
+
+    function updatePickerLive(lat: number, lon: number) {
+        if (!marker) return;
+        const requestId = ++pickerRequestId;
+
+        if (patternLayer) {
+            applyAndRender(extractPatternPartial(patternLayer.getValuesAtLatLon(lat, lon, map.getZoom())));
+        }
+
+        if (cachedInterpolator) {
+            void cachedInterpolator({ lat, lon }).then((values) => {
+                if (!isMounted || requestId !== pickerRequestId) return;
+                applyAndRender(extractInterpolatorPartial(values));
+            }).catch(() => { /* ignore */ });
+        }
+    }
+
     async function showPickerData({ lat, lon }: LatLon) {
         const requestId = ++pickerRequestId;
         pickerAbort?.abort();
         pickerAbort = new AbortController();
+        const abortSignal = pickerAbort.signal;
 
-        hideMarker();
-        marker = L.marker([lat, lon], {
-            draggable: true,
-            icon: draggableIcon,
-        }).addTo(map);
-        marker.on('dragend', (event: L.LeafletEvent) => {
-            const { lat, lng } = (event as any).target.getLatLng();
-            showPickerData({ lat, lon: lng });
-        });
+        ensureMarker(lat, lon);
 
-        const overlayIdent = store.get('overlay') as keyof typeof overlays;
-        let primaryLabel = overlayIdent === 'temp'
-            ? 'Temperature'
-            : overlays[overlayIdent]?.getName() ?? String(overlayIdent ?? 'Value');
-        let tempStr = '-';
+        if (patternLayer) {
+            applyAndRender(extractPatternPartial(patternLayer.getValuesAtLatLon(lat, lon, map.getZoom())));
+        }
+
         try {
-            const interpolator = await getLatLonInterpolator();
-            if (interpolator) {
+            const interpolator = await ensureInterpolator();
+            if (interpolator && isMounted && requestId === pickerRequestId) {
                 const values = await interpolator({ lat, lon });
-                if (Array.isArray(values)) {
-                    const overlayDef = overlays[overlayIdent];
-
-                    if (overlayIdent === 'temp') {
-                        tempStr = metrics.temp.convertValue(values[0]);
-                    } else if (overlayDef) {
-                        primaryLabel = overlayDef.getName();
-                        const probe = document.createElement('div');
-                        probe.innerHTML = overlayDef.createPickerHTML(values as RGBNumValues, getDirFunction());
-                        tempStr = probe.textContent?.replace(/\s+/g, ' ').trim() || '-';
-                    }
+                if (isMounted && requestId === pickerRequestId) {
+                    applyAndRender(extractInterpolatorPartial(values));
                 }
             }
         } catch { /* interpolator unavailable */ }
 
-        let windStr = '-';
-        let cloudsStr = '-';
-        let rainStr = '-';
         if (patternLayer) {
             let vals = patternLayer.getValuesAtLatLon(lat, lon, map.getZoom());
             const needsAsyncValues = !vals || !Number.isFinite(vals.windU) || !Number.isFinite(vals.windV);
             if (needsAsyncValues) {
                 try {
-                    vals = await patternLayer.awaitValuesAtLatLon(lat, lon, map.getZoom(), pickerAbort.signal);
+                    vals = await patternLayer.awaitValuesAtLatLon(lat, lon, map.getZoom(), abortSignal);
                 } catch {
                     vals = null;
                 }
             }
-            if (vals) {
-                cloudsStr = `${Math.round(vals.cloudPercent)} %`;
-                rainStr = metrics.rain.convertValue(vals.rainMm);
-                if (Number.isFinite(vals.windU) && Number.isFinite(vals.windV)) {
-                    const { dir, wind } = wind2obj([vals.windU, vals.windV, 0]);
-                    windStr = `${metrics.wind.convertValue(wind)} ${Math.round(dir)}°`;
-                }
-            }
+            if (!isMounted || requestId !== pickerRequestId) return;
+            applyAndRender(extractPatternPartial(vals));
         }
+    }
 
-        if (!isMounted || requestId !== pickerRequestId) {
-            return;
+    function onPluginOpened(p: string) {
+        const plugin = (plugins as Record<string, any>)[p];
+        if (plugin?.listenToSingleclick && plugin?.singleclickPriority === 'high') {
+            registerSingleclick(p as any, 'high');
         }
+    }
 
-        let html = `<div class="hiking-popup">`;
-        html += `<div class="popup-row"><span class="popup-label">${primaryLabel}</span><span class="popup-value">${tempStr}</span></div>`;
-        html += `<div class="popup-row"><span class="popup-label">Wind</span><span class="popup-value">${windStr}</span></div>`;
-        html += `<div class="popup-row"><span class="popup-label">Clouds</span><span class="popup-value">${cloudsStr}</span></div>`;
-        html += `<div class="popup-row"><span class="popup-label">Rain</span><span class="popup-value">${rainStr}</span></div>`;
-        html += `</div>`;
-
-        const nextPopup = new L.Popup({ autoClose: false, closeOnClick: false, offset: [0, 0] })
-            .setLatLng([lat, lon])
-            .setContent(html);
-        nextPopup.on('remove', () => {
-            if (popup === nextPopup) {
-                popup = null;
-            }
-        });
-
-        popup = nextPopup.openOn(map);
+    function onPluginClosed(p: string) {
+        if (p === name) return;
+        const plugin = (plugins as Record<string, any>)[p];
+        if (plugin?.singleclickPriority === 'high') {
+            registerSingleclick(name as any, 'high');
+        }
     }
 
     export const onopen = (location?: LatLon) => {
@@ -327,6 +447,8 @@
             return;
         }
 
+        cachedInterpolator = null;
+
         const sharedParams = baseWeatherParams ?? getCurrentWeatherParams('temp');
 
         try {
@@ -354,6 +476,7 @@
     }
 
     export const paramsChanged = () => {
+        cachedInterpolator = null;
         void syncPatternLayer();
         refreshOpenPicker();
     };
@@ -369,6 +492,8 @@
         singleclick.on(name, showPickerData);
         bcast.on('redrawFinished', syncPatternLayer);
         bcast.on('metricChanged', handleMetricChanged);
+        bcast.on('pluginOpened', onPluginOpened);
+        bcast.on('pluginClosed', onPluginClosed);
 
         if (overlaySet instanceof Promise) {
             void overlaySet.finally(() => {
@@ -384,8 +509,11 @@
         pickerAbort?.abort();
         pickerAbort = null;
         singleclick.off(name, showPickerData);
+        releaseSingleclick(name as any, 'high');
         bcast.off('redrawFinished', syncPatternLayer);
         bcast.off('metricChanged', handleMetricChanged);
+        bcast.off('pluginOpened', onPluginOpened);
+        bcast.off('pluginClosed', onPluginClosed);
         hideMarker();
 
         if (patternLayer) {
@@ -447,28 +575,103 @@
         transform: translateX(-100%);
     }
 
-    :global(.hiking-picker-marker) {
-        z-index: 1000;
+    :global(.hiking-picker) {
+        cursor: move;
+        font-size: 11px;
+        letter-spacing: 0.5px;
+    }
+
+    :global(.hiking-picker-line) {
+        position: relative;
+        border-left: 2px solid #404040c7;
+        height: 125px;
         cursor: move;
     }
 
-    :global(.hiking-popup) {
-        font-size: 12px;
-        min-width: 160px;
+    :global(.hiking-picker-line::after) {
+        display: block;
+        position: absolute;
+        left: -5px;
+        top: 120.5px;
+        background-color: white;
+        width: 8px;
+        height: 8px;
+        border-radius: 4px;
+        content: "";
     }
 
-    :global(.popup-row) {
+    :global(.hiking-picker-flag) {
+        position: absolute;
+        left: 2px;
+        top: 0;
+        cursor: move;
+        white-space: nowrap;
+        min-width: 160px;
+        color: white;
+        background: #404040c7;
+        border-top-right-radius: 10px;
+        border-bottom-right-radius: 10px;
+        padding: 6px 30px 6px 10px;
+        box-shadow: 0 0 4px 0 black;
+    }
+
+    :global(.hiking-picker-rows) {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    :global(.hiking-picker-row) {
         display: flex;
         justify-content: space-between;
-        padding: 2px 0;
+        gap: 12px;
     }
 
-    :global(.popup-label) {
-        opacity: 0.6;
+    :global(.hiking-picker-label) {
+        opacity: 0.7;
     }
 
-    :global(.popup-value) {
+    :global(.hiking-picker-value) {
         font-weight: bold;
+    }
+
+    :global(.hiking-picker-close) {
+        position: absolute;
+        top: -10px;
+        left: calc(100% + 8px);
+        width: 20px;
+        height: 20px;
+        line-height: 18px;
+        text-align: center;
+        border-radius: 4px;
+        background: #404040c7;
+        color: white;
+        cursor: pointer;
+        font-size: 16px;
+        box-shadow: 0 0 4px 0 black;
+    }
+
+    :global(.hiking-picker-detail) {
+        position: absolute;
+        left: 100%;
+        bottom: 0;
+        margin-left: -18px;
+        width: 25px;
+        height: 25px;
+        border-radius: 7px;
+        background: #d49500;
+        color: white;
+        cursor: pointer;
+        box-shadow: 0 0 4px 0 black;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    :global(.hiking-picker-detail svg) {
+        width: 18px;
+        height: 18px;
+        display: block;
     }
 
 </style>

@@ -1,6 +1,6 @@
 {
     "name": "windy-plugin-hiking-forecast",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Windy plugin combining temperature, wind, clouds, and rain into a hiking forecast overlay.",
     "main": "dist/plugin.min.js",
     "type": "module",
