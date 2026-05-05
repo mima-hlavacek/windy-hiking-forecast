@@ -71,6 +71,8 @@
     let pickerDragState: PickerDragState | null = null;
     let pickerDisabledMapDrag = false;
     let patternSyncId = 0;
+    let pendingForecastTimePatternSync: number | null = null;
+    let forecastTimeStoreListenerId: number | null = null;
 
     interface PickerValues {
         primaryLabel: string;
@@ -669,6 +671,17 @@
         }
     }
 
+    function scheduleForecastTimePatternSync() {
+        if (pendingForecastTimePatternSync != null) {
+            return;
+        }
+
+        pendingForecastTimePatternSync = requestAnimationFrame(() => {
+            pendingForecastTimePatternSync = null;
+            void syncPatternLayer();
+        });
+    }
+
     function handleMetricChanged() {
         updateRainLegendLabels();
         refreshOpenPicker();
@@ -691,6 +704,7 @@
         updateRainLegendLabels();
 
         singleclick.on(name, showPickerData);
+        forecastTimeStoreListenerId = store.on('timestamp', scheduleForecastTimePatternSync);
         bcast.on('redrawFinished', syncPatternLayer);
         bcast.on('metricChanged', handleMetricChanged);
         bcast.on('pluginOpened', onPluginOpened);
@@ -710,6 +724,14 @@
         if (pendingLegendRedraw != null) {
             cancelAnimationFrame(pendingLegendRedraw);
             pendingLegendRedraw = null;
+        }
+        if (pendingForecastTimePatternSync != null) {
+            cancelAnimationFrame(pendingForecastTimePatternSync);
+            pendingForecastTimePatternSync = null;
+        }
+        if (forecastTimeStoreListenerId != null) {
+            store.off(forecastTimeStoreListenerId);
+            forecastTimeStoreListenerId = null;
         }
         legendResizeObserver?.disconnect();
         legendResizeObserver = null;
