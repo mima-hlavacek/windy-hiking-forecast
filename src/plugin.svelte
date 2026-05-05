@@ -438,8 +438,9 @@
     function extractPatternPartial(vals: PatternValues): Partial<PickerValues> {
         if (!vals) return {};
         const partial: Partial<PickerValues> = {
-            cloudsStr: `${Math.round(vals.cloudPercent)} %`,
-            rainStr: metrics.rain.convertValue(vals.rainMm),
+            cloudsStr: Number.isFinite(vals.cloudPercent) ? `${Math.round(vals.cloudPercent)} %` : '-',
+            rainStr: Number.isFinite(vals.rainMm) ? metrics.rain.convertValue(vals.rainMm) : '-',
+            windStr: '-',
         };
         if (hasWindValues(vals)) {
             const { dir, wind } = wind2obj([vals.windU, vals.windV, 0]);

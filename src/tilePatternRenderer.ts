@@ -15,6 +15,7 @@ export interface PatternRenderInput {
     subW: number;
     subH: number;
     tileRes: number;
+    coverageMask: Uint8Array | null;
 }
 
 interface PatternRenderRequest extends PatternRenderInput {
@@ -60,8 +61,8 @@ function sampleBilinearChannel(
     return top + (bottom - top) * dy;
 }
 
-function renderPatternPixels(input: PatternRenderInput): Uint8ClampedArray {
-    const out = new Uint8ClampedArray(input.tileRes * input.tileRes * 4);
+function renderPatternPixels(input: PatternRenderInput): Uint8ClampedArray<ArrayBuffer> {
+    const out = new Uint8ClampedArray(input.tileRes * input.tileRes * 4) as Uint8ClampedArray<ArrayBuffer>;
     const sampleXs = new Float32Array(input.tileRes);
     const sampleYs = new Float32Array(input.tileRes);
 
@@ -76,6 +77,10 @@ function renderPatternPixels(input: PatternRenderInput): Uint8ClampedArray {
     for (let py = 0; py < input.tileRes; py++) {
         const fy = sampleYs[py];
         for (let px = 0; px < input.tileRes; px++) {
+            if (input.coverageMask && input.coverageMask[py * input.tileRes + px] === 0) {
+                continue;
+            }
+
             const fx = sampleXs[px];
             const cloudPercent = sampleBilinearChannel(input.channelR, input.width, fx, fy);
             const rainMm = sampleBilinearChannel(input.channelG, input.width, fx, fy);
@@ -165,6 +170,10 @@ self.onmessage = event => {
         for (let py = 0; py < input.tileRes; py++) {
             const fy = sampleYs[py];
             for (let px = 0; px < input.tileRes; px++) {
+                if (input.coverageMask && input.coverageMask[py * input.tileRes + px] === 0) {
+                    continue;
+                }
+
                 const fx = sampleXs[px];
                 const cloudPercent = sampleBilinearChannel(input.channelR, input.width, fx, fy);
                 const rainMm = sampleBilinearChannel(input.channelG, input.width, fx, fy);

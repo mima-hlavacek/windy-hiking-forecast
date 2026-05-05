@@ -1,9 +1,11 @@
 import { layerOrder } from '@windy/map';
 import { whichTile } from '@windy/renderUtils';
+import { globalProducts } from '@windy/rootScope';
+import products from '@windy/products';
 import { extractTileHeader } from '@windy/tileLayerSource';
 import { decodedTileDataSize, imageBitmapToUint8Array } from '@windy/TileLayerUtils';
 import { renderPatternTile } from './tilePatternRenderer';
-import type { FullRenderParameters } from '@windy/interfaces.d';
+import type { FullRenderParameters, LatLon } from '@windy/interfaces.d';
 import type { TileParams } from '@windy/Renderer';
 
 interface DecodedTileImage {
@@ -15,7 +17,7 @@ interface DecodedTileImage {
 
 interface DecodedTile {
     cloudTile: DecodedTileImage;
-    windTileInfo: TileParams;
+    windTileInfo: TileParams | null;
     patternCanvas: CanvasImageSource;
     cloudSubX: number;
     cloudSubY: number;
@@ -35,6 +37,7 @@ interface SampledValues {
 
 const TILE_RES = 256;
 const LAYER_BUCKET_ID = layerOrder.MAIN + Math.round((layerOrder.PARTICLES - layerOrder.MAIN) / 2);
+const GLOBAL_PRODUCTS = new Set<string>(globalProducts);
 
 async function fetchAndDecodeTile(
     tileInfo: TileParams,
@@ -102,6 +105,49 @@ function getMercatorCoords(lat: number, lon: number): { mercX: number; mercY: nu
     return { mercX, mercY };
 }
 
+function getLatLonFromMercator(mercX: number, mercY: number): LatLon {
+    const wrappedMercX = ((mercX % 1) + 1) % 1;
+    const lon = wrappedMercX * 360 - 180;
+    const latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * mercY)));
+    return { lat: latRad * 180 / Math.PI, lon };
+}
+
+function isGlobalProduct(product: FullRenderParameters['product']): boolean {
+    return GLOBAL_PRODUCTS.has(product);
+}
+
+function pointIsInProductBounds(params: FullRenderParameters, latLon: LatLon): boolean {
+    const product = products[params.product];
+    return product?.pointIsInBounds(latLon) ?? true;
+}
+
+function createProductCoverageMask(
+    params: FullRenderParameters,
+    coords: L.Coords,
+    tileRes: number,
+): Uint8Array | null {
+    if (isGlobalProduct(params.product)) {
+        return null;
+    }
+
+    const mask = new Uint8Array(tileRes * tileRes);
+    const tilesPerSide = Math.pow(2, coords.z);
+    let allInBounds = true;
+
+    for (let py = 0; py < tileRes; py++) {
+        const mercY = (coords.y + (py + 0.5) / tileRes) / tilesPerSide;
+        for (let px = 0; px < tileRes; px++) {
+            const mercX = (coords.x + (px + 0.5) / tileRes) / tilesPerSide;
+            const inBounds = pointIsInProductBounds(params, getLatLonFromMercator(mercX, mercY));
+            const index = py * tileRes + px;
+            mask[index] = inBounds ? 1 : 0;
+            allInBounds &&= inBounds;
+        }
+    }
+
+    return allInBounds ? null : mask;
+}
+
 function getTileCoordsAtZoom(mercX: number, mercY: number, zoom: number): { x: number; y: number } {
     const n = Math.pow(2, zoom);
     return {
@@ -145,7 +191,7 @@ function sampleDecodedTile(
         tile.cloudTileY,
         tile.cloudTileZ,
     );
-    const windValues = windTile
+    const windValues = windTile && tile.windTileInfo
         ? sampleLayerTile(
             windTile,
             mercX,
@@ -161,6 +207,15 @@ function sampleDecodedTile(
         rainMm: cloudValues.g,
         windU: windValues?.r ?? Number.NaN,
         windV: windValues?.g ?? Number.NaN,
+    };
+}
+
+function unavailableValues(): SampledValues {
+    return {
+        cloudPercent: Number.NaN,
+        rainMm: Number.NaN,
+        windU: Number.NaN,
+        windV: Number.NaN,
     };
 }
 
@@ -250,7 +305,7 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
         try {
             const cloudTileInfo = whichTile(coords, this.cloudsParams);
             const windTileInfo = whichTile(coords, this.windParams);
-            if (!cloudTileInfo || !windTileInfo) {
+            if (!cloudTileInfo) {
                 return null;
             }
 
@@ -289,6 +344,7 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
                 subW: cloudSubW,
                 subH: cloudSubH,
                 tileRes: TILE_RES,
+                coverageMask: createProductCoverageMask(this.cloudsParams, coords, TILE_RES),
             });
             if (abort.aborted) {
                 throw new Error('aborted');
@@ -314,8 +370,13 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
         tile: DecodedTile,
         mercX: number,
         mercY: number,
+        latLon: LatLon,
         abort?: AbortSignal,
     ): Promise<SampledValues | null> {
+        if (!tile.windTileInfo || !pointIsInProductBounds(this.windParams, latLon)) {
+            return sampleDecodedTile(tile, mercX, mercY);
+        }
+
         const windTile = await this.getDecodedTile(tile.windTileInfo, abort, this.windTilePromises);
         if (!windTile) {
             return sampleDecodedTile(tile, mercX, mercY);
@@ -353,6 +414,10 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
     }
 
     getValuesAtLatLon(lat: number, lon: number, mapZoom: number): SampledValues | null {
+        if (!pointIsInProductBounds(this.cloudsParams, { lat, lon })) {
+            return unavailableValues();
+        }
+
         const { mercX, mercY } = getMercatorCoords(lat, lon);
         const tile = this.findLoadedTileAtLatLon(mercX, mercY, mapZoom);
         return tile ? this.sampleDecodedTileWithCachedWind(tile, mercX, mercY) : null;
@@ -364,10 +429,15 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
         mapZoom: number,
         abort?: AbortSignal,
     ): Promise<SampledValues | null> {
+        const latLon = { lat, lon };
+        if (!pointIsInProductBounds(this.cloudsParams, latLon)) {
+            return unavailableValues();
+        }
+
         const { mercX, mercY } = getMercatorCoords(lat, lon);
         const loadedTile = this.findLoadedTileAtLatLon(mercX, mercY, mapZoom);
         if (loadedTile) {
-            return this.sampleDecodedTileWithWind(loadedTile, mercX, mercY, abort);
+            return this.sampleDecodedTileWithWind(loadedTile, mercX, mercY, latLon, abort);
         }
 
         const requestedZoom = Math.max(0, Math.floor(mapZoom));
@@ -377,7 +447,7 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
             return null;
         }
 
-        return this.sampleDecodedTileWithWind(awaitedTile.tile, mercX, mercY, abort);
+        return this.sampleDecodedTileWithWind(awaitedTile.tile, mercX, mercY, latLon, abort);
     }
 }
 
