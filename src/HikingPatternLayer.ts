@@ -35,9 +35,14 @@ interface SampledValues {
     windV: number;
 }
 
+type TileCoverage = 'full' | 'empty' | Uint8Array;
+
 const TILE_RES = 256;
+const COVERAGE_GRID_SIZE = 8;
+const PRODUCT_COVERAGE_CACHE_LIMIT = 1024;
 const LAYER_BUCKET_ID = layerOrder.MAIN + Math.round((layerOrder.PARTICLES - layerOrder.MAIN) / 2);
 const GLOBAL_PRODUCTS = new Set<string>(globalProducts);
+const productCoverageCache = new Map<string, TileCoverage>();
 
 async function fetchAndDecodeTile(
     tileInfo: TileParams,
@@ -121,31 +126,129 @@ function pointIsInProductBounds(params: FullRenderParameters, latLon: LatLon): b
     return product?.pointIsInBounds(latLon) ?? true;
 }
 
-function createProductCoverageMask(
-    params: FullRenderParameters,
+function getCoverageCacheKey(
+    product: FullRenderParameters['product'],
     coords: L.Coords,
     tileRes: number,
-): Uint8Array | null {
-    if (isGlobalProduct(params.product)) {
-        return null;
-    }
+): string {
+    return `${product}:${coords.z}:${coords.x}:${coords.y}:${tileRes}`;
+}
 
-    const mask = new Uint8Array(tileRes * tileRes);
-    const tilesPerSide = Math.pow(2, coords.z);
-    let allInBounds = true;
-
-    for (let py = 0; py < tileRes; py++) {
-        const mercY = (coords.y + (py + 0.5) / tileRes) / tilesPerSide;
-        for (let px = 0; px < tileRes; px++) {
-            const mercX = (coords.x + (px + 0.5) / tileRes) / tilesPerSide;
-            const inBounds = pointIsInProductBounds(params, getLatLonFromMercator(mercX, mercY));
-            const index = py * tileRes + px;
-            mask[index] = inBounds ? 1 : 0;
-            allInBounds &&= inBounds;
+function setCachedProductCoverage(cacheKey: string, coverage: TileCoverage): void {
+    if (productCoverageCache.size >= PRODUCT_COVERAGE_CACHE_LIMIT) {
+        const oldestKey = productCoverageCache.keys().next().value;
+        if (oldestKey) {
+            productCoverageCache.delete(oldestKey);
         }
     }
 
-    return allInBounds ? null : mask;
+    productCoverageCache.set(cacheKey, coverage);
+}
+
+function tilePointIsInProductBounds(
+    params: FullRenderParameters,
+    coords: L.Coords,
+    tilesPerSide: number,
+    tileOffsetX: number,
+    tileOffsetY: number,
+): boolean {
+    const mercX = (coords.x + tileOffsetX) / tilesPerSide;
+    const mercY = (coords.y + tileOffsetY) / tilesPerSide;
+    return pointIsInProductBounds(params, getLatLonFromMercator(mercX, mercY));
+}
+
+function classifyCoarseProductCoverage(
+    params: FullRenderParameters,
+    coords: L.Coords,
+    tilesPerSide: number,
+): 'full' | 'empty' | 'partial' {
+    let inBoundsCount = 0;
+    let sampleCount = 0;
+
+    const sample = (tileOffsetX: number, tileOffsetY: number): void => {
+        if (tilePointIsInProductBounds(params, coords, tilesPerSide, tileOffsetX, tileOffsetY)) {
+            inBoundsCount++;
+        }
+        sampleCount++;
+    };
+
+    sample(0, 0);
+    sample(1, 0);
+    sample(0, 1);
+    sample(1, 1);
+    sample(0.5, 0.5);
+
+    for (let gy = 0; gy < COVERAGE_GRID_SIZE; gy++) {
+        const tileOffsetY = (gy + 0.5) / COVERAGE_GRID_SIZE;
+        for (let gx = 0; gx < COVERAGE_GRID_SIZE; gx++) {
+            sample((gx + 0.5) / COVERAGE_GRID_SIZE, tileOffsetY);
+        }
+    }
+
+    if (inBoundsCount === sampleCount) {
+        return 'full';
+    }
+
+    return inBoundsCount === 0 ? 'empty' : 'partial';
+}
+
+function createExactProductCoverage(
+    params: FullRenderParameters,
+    coords: L.Coords,
+    tileRes: number,
+    tilesPerSide: number,
+): TileCoverage {
+    const mask = new Uint8Array(tileRes * tileRes);
+    let inBoundsCount = 0;
+
+    for (let py = 0; py < tileRes; py++) {
+        const tileOffsetY = (py + 0.5) / tileRes;
+        for (let px = 0; px < tileRes; px++) {
+            const inBounds = tilePointIsInProductBounds(
+                params,
+                coords,
+                tilesPerSide,
+                (px + 0.5) / tileRes,
+                tileOffsetY,
+            );
+            const index = py * tileRes + px;
+            mask[index] = inBounds ? 1 : 0;
+            if (inBounds) {
+                inBoundsCount++;
+            }
+        }
+    }
+
+    if (inBoundsCount === mask.length) {
+        return 'full';
+    }
+
+    return inBoundsCount === 0 ? 'empty' : mask;
+}
+
+function getProductCoverage(
+    params: FullRenderParameters,
+    coords: L.Coords,
+    tileRes: number,
+): TileCoverage {
+    if (isGlobalProduct(params.product)) {
+        return 'full';
+    }
+
+    const cacheKey = getCoverageCacheKey(params.product, coords, tileRes);
+    const cached = productCoverageCache.get(cacheKey);
+    if (cached) {
+        return cached;
+    }
+
+    const tilesPerSide = Math.pow(2, coords.z);
+    const coarseCoverage = classifyCoarseProductCoverage(params, coords, tilesPerSide);
+    const coverage = coarseCoverage === 'partial'
+        ? createExactProductCoverage(params, coords, tileRes, tilesPerSide)
+        : coarseCoverage;
+
+    setCachedProductCoverage(cacheKey, coverage);
+    return coverage;
 }
 
 function getTileCoordsAtZoom(mercX: number, mercY: number, zoom: number): { x: number; y: number } {
@@ -309,6 +412,11 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
                 return null;
             }
 
+            const coverage = getProductCoverage(this.cloudsParams, coords, TILE_RES);
+            if (coverage === 'empty') {
+                return null;
+            }
+
             const cloudTile = await this.getDecodedTile(cloudTileInfo, abort, this.cloudTilePromises);
             if (!cloudTile) {
                 return null;
@@ -344,7 +452,7 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
                 subW: cloudSubW,
                 subH: cloudSubH,
                 tileRes: TILE_RES,
-                coverageMask: createProductCoverageMask(this.cloudsParams, coords, TILE_RES),
+                coverageMask: coverage === 'full' ? null : coverage,
             });
             if (abort.aborted) {
                 throw new Error('aborted');
