@@ -55,6 +55,9 @@
     const { title, name } = config;
 
     let patternLayer: HikingPatternLayer | null = null;
+    let pendingPatternLayer: HikingPatternLayer | null = null;
+    let pendingPatternSwapAbort: AbortController | null = null;
+    let pendingPatternSwapToken: { syncId: number } | null = null;
     let marker: L.Marker | null = null;
     let cloudCanvas: HTMLCanvasElement;
     let rainCanvas: HTMLCanvasElement;
@@ -67,6 +70,7 @@
     let pendingLegendRedraw: number | null = null;
     let pickerDragState: PickerDragState | null = null;
     let pickerDisabledMapDrag = false;
+    let patternSyncId = 0;
 
     interface PickerValues {
         primaryLabel: string;
@@ -556,25 +560,78 @@
         void showPickerData({ lat, lon: lng });
     }
 
-    function replacePatternLayer(
+    function cancelPendingPatternSwap() {
+        pendingPatternSwapAbort?.abort();
+        pendingPatternSwapAbort = null;
+        pendingPatternSwapToken = null;
+
+        if (pendingPatternLayer) {
+            pendingPatternLayer.remove();
+            pendingPatternLayer = null;
+        }
+    }
+
+    async function replacePatternLayer(
         renderKey: string,
         cloudsParams: FullRenderParameters,
         windParams: FullRenderParameters,
-    ): boolean {
+        syncId: number,
+    ): Promise<boolean> {
         if (patternLayer?.renderKey === renderKey) {
+            cancelPendingPatternSwap();
+            return false;
+        }
+        if (pendingPatternLayer?.renderKey === renderKey) {
+            if (pendingPatternSwapToken) {
+                pendingPatternSwapToken.syncId = syncId;
+            }
             return false;
         }
 
+        cancelPendingPatternSwap();
+
         const nextLayer = new HikingPatternLayer(renderKey, cloudsParams, windParams);
+        const swapAbort = new AbortController();
+        const swapToken = { syncId };
+        pendingPatternLayer = nextLayer;
+        pendingPatternSwapAbort = swapAbort;
+        pendingPatternSwapToken = swapToken;
+
+        nextLayer.addTo(map);
+        nextLayer.opacity = 0;
+        nextLayer.redraw();
+
+        const ready = await nextLayer.waitForVisibleTiles(swapAbort.signal);
+        if (
+            !ready ||
+            !isMounted ||
+            swapToken.syncId !== patternSyncId ||
+            pendingPatternLayer !== nextLayer ||
+            pendingPatternSwapAbort !== swapAbort
+        ) {
+            if (pendingPatternLayer === nextLayer) {
+                pendingPatternLayer = null;
+            }
+            if (pendingPatternSwapAbort === swapAbort) {
+                pendingPatternSwapAbort = null;
+            }
+            if (pendingPatternSwapToken === swapToken) {
+                pendingPatternSwapToken = null;
+            }
+            nextLayer.remove();
+            return false;
+        }
+
         const previousLayer = patternLayer;
         patternLayer = nextLayer;
-        nextLayer.addTo(map);
-        nextLayer.redraw();
+        pendingPatternLayer = null;
+        pendingPatternSwapAbort = null;
+        pendingPatternSwapToken = null;
+        nextLayer.opacity = 1;
 
         if (previousLayer) {
             previousLayer.remove();
         }
-
         return true;
     }
 
@@ -584,6 +641,7 @@
         }
 
         cachedInterpolator = null;
+        const syncId = ++patternSyncId;
 
         const sharedParams = baseWeatherParams ?? getCurrentWeatherParams('temp');
 
@@ -593,11 +651,16 @@
                 createFullRenderingParams('wind', { ...sharedParams, overlay: 'wind' }, store.get('timestamp')),
             ]);
 
-            if (!isMounted) {
+            if (!isMounted || syncId !== patternSyncId) {
                 return;
             }
 
-            const replaced = replacePatternLayer(getRenderKey(cloudsParams, windParams), cloudsParams, windParams);
+            const replaced = await replacePatternLayer(
+                getRenderKey(cloudsParams, windParams),
+                cloudsParams,
+                windParams,
+                syncId,
+            );
             if (replaced) {
                 refreshOpenPicker();
             }
@@ -659,6 +722,7 @@
         bcast.off('pluginOpened', onPluginOpened);
         bcast.off('pluginClosed', onPluginClosed);
         hideMarker();
+        cancelPendingPatternSwap();
 
         if (patternLayer) {
             patternLayer.remove();

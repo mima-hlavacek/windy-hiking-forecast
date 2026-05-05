@@ -323,12 +323,12 @@ function unavailableValues(): SampledValues {
 }
 
 class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
-    readonly renderKey: string;
     private readonly cloudsParams: FullRenderParameters;
     private readonly windParams: FullRenderParameters;
     private readonly cloudTilePromises = new Map<string, Promise<DecodedTileImage | null>>();
     private readonly windTilePromises = new Map<string, Promise<DecodedTileImage | null>>();
     private redrawQueued = false;
+    readonly renderKey: string;
 
     constructor(renderKey: string, cloudsParams: FullRenderParameters, windParams: FullRenderParameters) {
         super(
@@ -354,6 +354,105 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
                 this.redraw();
             });
         });
+    }
+
+    waitForVisibleTiles(abort?: AbortSignal): Promise<boolean> {
+        if (abort?.aborted) {
+            return Promise.resolve(false);
+        }
+
+        const tilesAreReady = () => (
+            this._tileCache.requestedTilesCount > 0 &&
+            this._tileCache.pendingTilesCount === 0
+        );
+
+        if (tilesAreReady()) {
+            return Promise.resolve(true);
+        }
+
+        return new Promise((resolve) => {
+            const layer = this;
+            let frameId: number | null = null;
+
+            function cleanup() {
+                if (frameId != null) {
+                    cancelAnimationFrame(frameId);
+                    frameId = null;
+                }
+                layer.off('tileloaded', scheduleCheck);
+                abort?.removeEventListener('abort', onAbort);
+            }
+
+            function finish(ready: boolean) {
+                cleanup();
+                resolve(ready);
+            }
+
+            function check() {
+                frameId = null;
+                if (abort?.aborted) {
+                    finish(false);
+                    return;
+                }
+                if (tilesAreReady()) {
+                    finish(true);
+                    return;
+                }
+                scheduleCheck();
+            }
+
+            function onAbort() {
+                finish(false);
+            }
+
+            function scheduleCheck() {
+                if (frameId != null) {
+                    return;
+                }
+                frameId = requestAnimationFrame(check);
+            }
+
+            layer.on('tileloaded', scheduleCheck);
+            abort?.addEventListener('abort', onAbort, { once: true });
+            scheduleCheck();
+        });
+    }
+
+    getValuesAtLatLon(lat: number, lon: number, mapZoom: number): SampledValues | null {
+        if (!pointIsInProductBounds(this.cloudsParams, { lat, lon })) {
+            return unavailableValues();
+        }
+
+        const { mercX, mercY } = getMercatorCoords(lat, lon);
+        const tile = this.findLoadedTileAtLatLon(mercX, mercY, mapZoom);
+        return tile ? this.sampleDecodedTileWithCachedWind(tile, mercX, mercY) : null;
+    }
+
+    async awaitValuesAtLatLon(
+        lat: number,
+        lon: number,
+        mapZoom: number,
+        abort?: AbortSignal,
+    ): Promise<SampledValues | null> {
+        const latLon = { lat, lon };
+        if (!pointIsInProductBounds(this.cloudsParams, latLon)) {
+            return unavailableValues();
+        }
+
+        const { mercX, mercY } = getMercatorCoords(lat, lon);
+        const loadedTile = this.findLoadedTileAtLatLon(mercX, mercY, mapZoom);
+        if (loadedTile) {
+            return this.sampleDecodedTileWithWind(loadedTile, mercX, mercY, latLon, abort);
+        }
+
+        const requestedZoom = Math.max(0, Math.floor(mapZoom));
+        const coords = getTileCoordsAtZoom(mercX, mercY, requestedZoom);
+        const awaitedTile = await this._tileCache.awaitTile({ ...coords, z: requestedZoom }, abort);
+        if (awaitedTile.status !== 'success') {
+            return null;
+        }
+
+        return this.sampleDecodedTileWithWind(awaitedTile.tile, mercX, mercY, latLon, abort);
     }
 
     protected _drawTile(
@@ -521,42 +620,6 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
         return null;
     }
 
-    getValuesAtLatLon(lat: number, lon: number, mapZoom: number): SampledValues | null {
-        if (!pointIsInProductBounds(this.cloudsParams, { lat, lon })) {
-            return unavailableValues();
-        }
-
-        const { mercX, mercY } = getMercatorCoords(lat, lon);
-        const tile = this.findLoadedTileAtLatLon(mercX, mercY, mapZoom);
-        return tile ? this.sampleDecodedTileWithCachedWind(tile, mercX, mercY) : null;
-    }
-
-    async awaitValuesAtLatLon(
-        lat: number,
-        lon: number,
-        mapZoom: number,
-        abort?: AbortSignal,
-    ): Promise<SampledValues | null> {
-        const latLon = { lat, lon };
-        if (!pointIsInProductBounds(this.cloudsParams, latLon)) {
-            return unavailableValues();
-        }
-
-        const { mercX, mercY } = getMercatorCoords(lat, lon);
-        const loadedTile = this.findLoadedTileAtLatLon(mercX, mercY, mapZoom);
-        if (loadedTile) {
-            return this.sampleDecodedTileWithWind(loadedTile, mercX, mercY, latLon, abort);
-        }
-
-        const requestedZoom = Math.max(0, Math.floor(mapZoom));
-        const coords = getTileCoordsAtZoom(mercX, mercY, requestedZoom);
-        const awaitedTile = await this._tileCache.awaitTile({ ...coords, z: requestedZoom }, abort);
-        if (awaitedTile.status !== 'success') {
-            return null;
-        }
-
-        return this.sampleDecodedTileWithWind(awaitedTile.tile, mercX, mercY, latLon, abort);
-    }
 }
 
 export default HikingPatternLayer;
