@@ -63,6 +63,8 @@
     let pickerRequestId = 0;
     let pickerAbort: AbortController | null = null;
     let cachedInterpolator: CoordsInterpolationFun | null = null;
+    let legendResizeObserver: ResizeObserver | null = null;
+    let pendingLegendRedraw: number | null = null;
 
     interface PickerValues {
         primaryLabel: string;
@@ -124,6 +126,34 @@
         rainLegendTicks = createLegendTicks(RAIN_LEVELS, (index) => {
             const upperLabel = getRainLegendUpperLabel(index);
             return upperLabel === '∞' || !rainUnit ? upperLabel : `${upperLabel} ${rainUnit}`;
+        });
+    }
+
+    function resizeLegendCanvas(canvas: HTMLCanvasElement) {
+        const width = Math.max(1, Math.round(canvas.clientWidth || canvas.getBoundingClientRect().width || 180));
+        const height = 16;
+
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+        }
+    }
+
+    function redrawLegendBars() {
+        resizeLegendCanvas(cloudCanvas);
+        resizeLegendCanvas(rainCanvas);
+        drawDitherBar(cloudCanvas, CLOUD_LEVELS, 'cloud');
+        drawDitherBar(rainCanvas, RAIN_LEVELS, 'rain');
+    }
+
+    function scheduleLegendRedraw() {
+        if (pendingLegendRedraw != null) {
+            return;
+        }
+
+        pendingLegendRedraw = requestAnimationFrame(() => {
+            pendingLegendRedraw = null;
+            redrawLegendBars();
         });
     }
 
@@ -485,8 +515,10 @@
         isMounted = true;
         const overlaySet = store.set('overlay', 'temp');
 
-        drawDitherBar(cloudCanvas, CLOUD_LEVELS, 'cloud');
-        drawDitherBar(rainCanvas, RAIN_LEVELS, 'rain');
+        redrawLegendBars();
+        legendResizeObserver = new ResizeObserver(scheduleLegendRedraw);
+        legendResizeObserver.observe(cloudCanvas);
+        legendResizeObserver.observe(rainCanvas);
         updateRainLegendLabels();
 
         singleclick.on(name, showPickerData);
@@ -506,6 +538,12 @@
 
     onDestroy(() => {
         isMounted = false;
+        if (pendingLegendRedraw != null) {
+            cancelAnimationFrame(pendingLegendRedraw);
+            pendingLegendRedraw = null;
+        }
+        legendResizeObserver?.disconnect();
+        legendResizeObserver = null;
         pickerAbort?.abort();
         pickerAbort = null;
         singleclick.off(name, showPickerData);
