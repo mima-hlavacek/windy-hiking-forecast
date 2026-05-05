@@ -65,6 +65,8 @@
     let cachedInterpolator: CoordsInterpolationFun | null = null;
     let legendResizeObserver: ResizeObserver | null = null;
     let pendingLegendRedraw: number | null = null;
+    let pickerDragState: PickerDragState | null = null;
+    let pickerDisabledMapDrag = false;
 
     interface PickerValues {
         primaryLabel: string;
@@ -72,6 +74,14 @@
         windStr: string;
         cloudsStr: string;
         rainStr: string;
+    }
+
+    interface PickerDragState {
+        pointerId: number;
+        element: HTMLElement;
+        startClientX: number;
+        startClientY: number;
+        startPoint: L.Point;
     }
 
     let lastValues: PickerValues = {
@@ -241,12 +251,82 @@
         return `${serialize(cloudsParams)}||${serialize(windParams)}`;
     }
 
+    function getMapDragPan() {
+        return map.maplibreMap?.dragPan;
+    }
+
+    function disableMapDragForPicker() {
+        const dragPan = getMapDragPan();
+        if (!pickerDisabledMapDrag && dragPan?.isEnabled()) {
+            dragPan.disable();
+            pickerDisabledMapDrag = true;
+        }
+    }
+
+    function restoreMapDragForPicker() {
+        if (!pickerDisabledMapDrag) return;
+        getMapDragPan()?.enable();
+        pickerDisabledMapDrag = false;
+    }
+
+    function finishPickerDrag(refreshValues: boolean) {
+        const dragState = pickerDragState;
+        pickerDragState = null;
+
+        if (dragState?.element.hasPointerCapture(dragState.pointerId)) {
+            dragState.element.releasePointerCapture(dragState.pointerId);
+        }
+
+        restoreMapDragForPicker();
+
+        if (!refreshValues || !marker) return;
+        const { lat: la, lng: ln } = marker.getLatLng();
+        void showPickerData({ lat: la, lon: ln });
+    }
+
+    function startPickerDrag(e: PointerEvent, pickerEl: HTMLElement, markerToDrag: L.Marker) {
+        if (!e.isPrimary || e.button !== 0) return;
+        if (e.target instanceof Element && e.target.closest('[data-ref="close"], [data-ref="detail"]')) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const startPoint = map.latLngToContainerPoint(markerToDrag.getLatLng());
+        pickerDragState = {
+            pointerId: e.pointerId,
+            element: pickerEl,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+            startPoint,
+        };
+
+        disableMapDragForPicker();
+        pickerEl.setPointerCapture(e.pointerId);
+    }
+
+    function movePickerDrag(e: PointerEvent, markerToDrag: L.Marker) {
+        const dragState = pickerDragState;
+        if (!dragState || e.pointerId !== dragState.pointerId) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const nextPoint = dragState.startPoint.add([
+            e.clientX - dragState.startClientX,
+            e.clientY - dragState.startClientY,
+        ]);
+        const nextLatLng = map.containerPointToLatLng(nextPoint);
+        markerToDrag.setLatLng(nextLatLng);
+        scheduleDragUpdate(nextLatLng.lat, nextLatLng.lng);
+    }
+
     function hideMarker() {
         if (dragThrottleTimer != null) {
             clearTimeout(dragThrottleTimer);
             dragThrottleTimer = null;
         }
         pendingDragLatLon = null;
+        finishPickerDrag(false);
         if (marker) {
             if (map.hasLayer(marker)) {
                 marker.remove();
@@ -262,28 +342,37 @@
         }
 
         const newMarker = L.marker([lat, lon], {
-            draggable: true,
             icon: flagIcon,
             zIndexOffset: 800,
         }).addTo(map);
 
-        newMarker.on('drag', () => {
-            const { lat: la, lng: ln } = newMarker.getLatLng();
-            scheduleDragUpdate(la, ln);
-        });
-        newMarker.on('dragend', () => {
-            const { lat: la, lng: ln } = newMarker.getLatLng();
-            void showPickerData({ lat: la, lon: ln });
-        });
-
         const el = newMarker.getElement();
+        if (el) {
+            el.addEventListener('pointerdown', (e) => startPickerDrag(e, el, newMarker));
+            el.addEventListener('pointermove', (e) => movePickerDrag(e, newMarker));
+            el.addEventListener('pointerup', (e) => {
+                if (pickerDragState?.pointerId !== e.pointerId) return;
+                e.preventDefault();
+                e.stopPropagation();
+                finishPickerDrag(true);
+            });
+            el.addEventListener('pointercancel', (e) => {
+                if (pickerDragState?.pointerId !== e.pointerId) return;
+                e.preventDefault();
+                e.stopPropagation();
+                finishPickerDrag(false);
+            });
+        }
+
         const closeBtn = el?.querySelector('[data-ref="close"]');
+        closeBtn?.addEventListener('pointerdown', (e) => e.stopPropagation());
         closeBtn?.addEventListener('click', (e) => {
             e.stopPropagation();
             hideMarker();
         });
 
         const detailBtn = el?.querySelector('[data-ref="detail"]');
+        detailBtn?.addEventListener('pointerdown', (e) => e.stopPropagation());
         detailBtn?.addEventListener('click', (e) => {
             e.stopPropagation();
             const { lat: la, lng: ln } = newMarker.getLatLng();
@@ -617,6 +706,8 @@
         cursor: move;
         font-size: 11px;
         letter-spacing: 0.5px;
+        touch-action: none;
+        user-select: none;
     }
 
     :global(.hiking-picker-line) {
