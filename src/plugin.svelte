@@ -429,13 +429,19 @@
         return {};
     }
 
-    function extractPatternPartial(vals: ReturnType<HikingPatternLayer['getValuesAtLatLon']>): Partial<PickerValues> {
+    type PatternValues = ReturnType<HikingPatternLayer['getValuesAtLatLon']>;
+
+    function hasWindValues(vals: PatternValues): boolean {
+        return !!vals && Number.isFinite(vals.windU) && Number.isFinite(vals.windV);
+    }
+
+    function extractPatternPartial(vals: PatternValues): Partial<PickerValues> {
         if (!vals) return {};
         const partial: Partial<PickerValues> = {
             cloudsStr: `${Math.round(vals.cloudPercent)} %`,
             rainStr: metrics.rain.convertValue(vals.rainMm),
         };
-        if (Number.isFinite(vals.windU) && Number.isFinite(vals.windV)) {
+        if (hasWindValues(vals)) {
             const { dir, wind } = wind2obj([vals.windU, vals.windV, 0]);
             partial.windStr = `${metrics.wind.convertValue(wind)} ${Math.round(dir)}°`;
         }
@@ -459,14 +465,24 @@
     function updatePickerLive(lat: number, lon: number) {
         if (!marker) return;
         const requestId = ++pickerRequestId;
+        const layer = patternLayer;
 
-        if (patternLayer) {
-            applyAndRender(extractPatternPartial(patternLayer.getValuesAtLatLon(lat, lon, map.getZoom())));
+        if (layer) {
+            const zoom = map.getZoom();
+            const vals = layer.getValuesAtLatLon(lat, lon, zoom);
+            applyAndRender(extractPatternPartial(vals));
+
+            if (!hasWindValues(vals)) {
+                void layer.awaitValuesAtLatLon(lat, lon, zoom).then((asyncVals) => {
+                    if (!isMounted || !marker || requestId !== pickerRequestId || patternLayer !== layer) return;
+                    applyAndRender(extractPatternPartial(asyncVals));
+                }).catch(() => { /* ignore */ });
+            }
         }
 
         if (cachedInterpolator) {
             void cachedInterpolator({ lat, lon }).then((values) => {
-                if (!isMounted || requestId !== pickerRequestId) return;
+                if (!isMounted || !marker || requestId !== pickerRequestId) return;
                 applyAndRender(extractInterpolatorPartial(values));
             }).catch(() => { /* ignore */ });
         }
@@ -496,7 +512,7 @@
 
         if (patternLayer) {
             let vals = patternLayer.getValuesAtLatLon(lat, lon, map.getZoom());
-            const needsAsyncValues = !vals || !Number.isFinite(vals.windU) || !Number.isFinite(vals.windV);
+            const needsAsyncValues = !hasWindValues(vals);
             if (needsAsyncValues) {
                 try {
                     vals = await patternLayer.awaitValuesAtLatLon(lat, lon, map.getZoom(), abortSignal);

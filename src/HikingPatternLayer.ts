@@ -222,7 +222,10 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
 
         let pending = promiseCache.get(tileInfo.url);
         if (!pending) {
-            pending = fetchAndDecodeTile(tileInfo);
+            pending = fetchAndDecodeTile(tileInfo).catch(error => {
+                promiseCache.delete(tileInfo.url);
+                throw error;
+            });
             promiseCache.set(tileInfo.url, pending);
         }
 
@@ -236,7 +239,6 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
             }
             return decodedTile;
         } catch (error) {
-            promiseCache.delete(tileInfo.url);
             if (abort?.aborted) {
                 throw new Error('aborted');
             }
