@@ -1,5 +1,5 @@
 import { layerOrder } from '@windy/map';
-import { whichTile } from '@windy/renderUtils';
+import { getDataZoom, getTrans } from '@windy/renderUtils';
 import { globalProducts } from '@windy/rootScope';
 import products from '@windy/products';
 import { extractTileHeader } from '@windy/tileLayerSource';
@@ -43,6 +43,37 @@ const PRODUCT_COVERAGE_CACHE_LIMIT = 1024;
 const LAYER_BUCKET_ID = layerOrder.MAIN + Math.round((layerOrder.PARTICLES - layerOrder.MAIN) / 2);
 const GLOBAL_PRODUCTS = new Set<string>(globalProducts);
 const productCoverageCache = new Map<string, TileCoverage>();
+
+function getTileParams(coords: L.Coords, params: FullRenderParameters): TileParams | null {
+    const dataZoom = getDataZoom(params, coords.z);
+    const trans = getTrans(coords.z, dataZoom);
+    const dataTileX = Math.floor(coords.x / trans);
+    const dataTileY = Math.floor(coords.y / trans);
+    const tilesPerSide = Math.pow(2, dataZoom);
+
+    if (dataTileY < 0 || dataTileY >= tilesPerSide) {
+        return null;
+    }
+
+    const wrappedDataTileX = ((dataTileX % tilesPerSide) + tilesPerSide) % tilesPerSide;
+    const url = params.fullPath
+        .replace('<z>', String(dataZoom))
+        .replace('<x>', String(wrappedDataTileX))
+        .replace('<y>', String(dataTileY));
+
+    return {
+        x: wrappedDataTileX,
+        y: dataTileY,
+        z: dataZoom,
+        intX: coords.x - dataTileX * trans,
+        intY: coords.y - dataTileY * trans,
+        trans,
+        url,
+        transformR: params.transformR ?? null,
+        transformG: params.transformG ?? null,
+        transformB: params.transformB ?? null,
+    };
+}
 
 async function fetchAndDecodeTile(
     tileInfo: TileParams,
@@ -505,8 +536,8 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
 
     private async loadTileData(coords: L.Coords, abort: AbortSignal): Promise<DecodedTile | null> {
         try {
-            const cloudTileInfo = whichTile(coords, this.cloudsParams);
-            const windTileInfo = whichTile(coords, this.windParams);
+            const cloudTileInfo = getTileParams(coords, this.cloudsParams);
+            const windTileInfo = getTileParams(coords, this.windParams);
             if (!cloudTileInfo) {
                 return null;
             }
