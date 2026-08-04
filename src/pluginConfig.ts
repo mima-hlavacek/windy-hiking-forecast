@@ -2,7 +2,7 @@ import type { ExternalPluginConfig } from '@windy/interfaces';
 
 const config: ExternalPluginConfig = {
     name: 'windy-plugin-hiking-forecast',
-    version: '0.1.2',
+    version: '0.1.3',
     icon: '🥾',
     title: 'Hiking Forecast',
     description: 'Combined forecast showing temperature, wind, clouds, and rain.',
