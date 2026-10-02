@@ -35,8 +35,7 @@
     import { getDirFunction } from "@windy/format";
     import store from "@windy/store";
     import { map } from "@windy/map";
-    import { singleclick, register as registerSingleclick, release as releaseSingleclick } from "@windy/singleclick";
-    import plugins from "@windy/plugins";
+    import { singleclick } from "@windy/singleclick";
     import { getLatLonInterpolator } from "@windy/interpolator";
     import metrics from "@windy/metrics";
     import overlays from "@windy/overlays";
@@ -532,21 +531,6 @@
         }
     }
 
-    function onPluginOpened(p: string) {
-        const plugin = (plugins as Record<string, any>)[p];
-        if (plugin?.listenToSingleclick && plugin?.singleclickPriority === 'high') {
-            registerSingleclick(p as any, 'high');
-        }
-    }
-
-    function onPluginClosed(p: string) {
-        if (p === name) return;
-        const plugin = (plugins as Record<string, any>)[p];
-        if (plugin?.singleclickPriority === 'high') {
-            registerSingleclick(name as any, 'high');
-        }
-    }
-
     export const onopen = (location?: LatLon) => {
         if (location && typeof location === 'object' && 'lat' in location) {
             showPickerData(location);
@@ -707,8 +691,6 @@
         forecastTimeStoreListenerId = store.on('timestamp', scheduleForecastTimePatternSync);
         bcast.on('redrawFinished', syncPatternLayer);
         bcast.on('metricChanged', handleMetricChanged);
-        bcast.on('pluginOpened', onPluginOpened);
-        bcast.on('pluginClosed', onPluginClosed);
 
         if (overlaySet instanceof Promise) {
             void overlaySet.finally(() => {
@@ -738,11 +720,8 @@
         pickerAbort?.abort();
         pickerAbort = null;
         singleclick.off(name, showPickerData);
-        releaseSingleclick(name as any, 'high');
         bcast.off('redrawFinished', syncPatternLayer);
         bcast.off('metricChanged', handleMetricChanged);
-        bcast.off('pluginOpened', onPluginOpened);
-        bcast.off('pluginClosed', onPluginClosed);
         hideMarker();
         cancelPendingPatternSwap();
 
