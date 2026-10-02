@@ -600,7 +600,7 @@
         pendingPatternSwapToken = swapToken;
 
         nextLayer.addTo(map);
-        nextLayer.opacity = 0;
+        nextLayer.setPatternOpacity(0);
         nextLayer.redraw();
 
         const ready = await nextLayer.waitForVisibleTiles(swapAbort.signal);
@@ -629,7 +629,7 @@
         pendingPatternLayer = null;
         pendingPatternSwapAbort = null;
         pendingPatternSwapToken = null;
-        nextLayer.opacity = 1;
+        nextLayer.setPatternOpacity(1);
 
         if (previousLayer) {
             previousLayer.remove();
@@ -666,8 +666,8 @@
             if (replaced) {
                 refreshOpenPicker();
             }
-        } catch {
-            // Ignore transient render-param failures and retry on the next redraw cycle.
+        } catch (error) {
+            console.error('Hiking forecast layer setup failed', error);
         }
     }
 

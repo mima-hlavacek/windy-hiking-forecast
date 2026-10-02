@@ -4,7 +4,8 @@ import { globalProducts } from '@windy/rootScope';
 import products from '@windy/products';
 import { extractTileHeader } from '@windy/tileLayerSource';
 import { decodedTileDataSize, imageBitmapToUint8Array } from '@windy/TileLayerUtils';
-import { renderPatternTile } from './tilePatternRenderer';
+import { PatternShader } from './patternShader';
+import type { PatternTile } from './patternShader';
 import type { FullRenderParameters, LatLon } from '@windy/interfaces.d';
 import type { TileParams } from '@windy/Renderer';
 
@@ -18,11 +19,7 @@ interface DecodedTileImage {
 interface DecodedTile {
     cloudTile: DecodedTileImage;
     windTileInfo: TileParams | null;
-    patternCanvas: CanvasImageSource;
-    cloudSubX: number;
-    cloudSubY: number;
-    cloudSubW: number;
-    cloudSubH: number;
+    pattern: PatternTile;
     cloudTileX: number;
     cloudTileY: number;
     cloudTileZ: number;
@@ -358,7 +355,12 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
     private readonly windParams: FullRenderParameters;
     private readonly cloudTilePromises = new Map<string, Promise<DecodedTileImage | null>>();
     private readonly windTilePromises = new Map<string, Promise<DecodedTileImage | null>>();
-    private redrawQueued = false;
+    private maplibreMap: L.MapLibreMap | null = null;
+    private hostMap: L.LeafletGlMap | null = null;
+    private shader: PatternShader | null = null;
+    private readonly shaderLayerId = `hiking-pattern-${Math.random().toString(36).slice(2)}`;
+    private readonly onStyleLoaded = () => this.addShaderLayer();
+    patternOpacity = 1;
     readonly renderKey: string;
 
     constructor(renderKey: string, cloudsParams: FullRenderParameters, windParams: FullRenderParameters) {
@@ -374,17 +376,65 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
         this.cloudsParams = cloudsParams;
         this.windParams = windParams;
 
-        this.on('tileloaded', () => {
-            if (this.redrawQueued) {
-                return;
-            }
+        this.on('tileloaded', () => this.maplibreMap?.triggerRepaint());
+    }
 
-            this.redrawQueued = true;
-            requestAnimationFrame(() => {
-                this.redrawQueued = false;
-                this.redraw();
-            });
-        });
+    onAdd(map: L.LeafletGlMap): this {
+        super.onAdd(map);
+        this.hostMap = map;
+        this.maplibreMap = map.maplibreMap;
+        this.maplibreMap.on('style.load', this.onStyleLoaded);
+        this.addShaderLayer();
+        return this;
+    }
+
+    onRemove(map: L.LeafletGlMap): this {
+        this.maplibreMap?.off('style.load', this.onStyleLoaded);
+        if (this.maplibreMap?.getLayer(this.shaderLayerId)) {
+            this.maplibreMap.removeLayer(this.shaderLayerId);
+        }
+        this.maplibreMap = null;
+        this.hostMap = null;
+        return super.onRemove(map);
+    }
+
+    setPatternOpacity(opacity: number): void {
+        this.patternOpacity = opacity;
+        this.maplibreMap?.triggerRepaint();
+    }
+
+    private addShaderLayer(): void {
+        if (!this.maplibreMap || this.maplibreMap.getLayer(this.shaderLayerId)) return;
+        const map = this.hostMap;
+        if (!map) return;
+        const shaderLayer: L.CustomLayerInterface = {
+            id: this.shaderLayerId,
+            type: 'custom',
+            renderingMode: '2d',
+            onAdd: (_map, gl) => { this.shader = new PatternShader(gl); },
+            render: (_gl, options) => {
+                if (!this.shader) return;
+                const zoom = Math.max(0, Math.floor(map.getZoom()));
+                const pixels = map.getPixelBounds();
+                // Pixel bounds use the animated map zoom; tile-cache bounds use an integer zoom.
+                const tileSize = TILE_RES * Math.pow(2, map.getZoom() - zoom);
+                const bounds = new L.Bounds(
+                    new L.Point(Math.floor(pixels.min.x / tileSize), Math.floor(pixels.min.y / tileSize)),
+                    new L.Point(Math.floor(pixels.max.x / tileSize), Math.floor(pixels.max.y / tileSize)),
+                );
+                const tiles = this._tileCache.getOrderedTilePyramid(bounds, zoom, 4, 2)
+                    .flatMap(coords => {
+                        const tile = this._tileCache.getData(coords);
+                        return tile ? [{ coords, data: tile.pattern }] : [];
+                    });
+                this.shader.render(options.modelViewProjectionMatrix, tiles, this.patternOpacity, map.getZoom());
+            },
+            onRemove: () => {
+                this.shader?.destroy();
+                this.shader = null;
+            },
+        };
+        this.maplibreMap.addLayer(shaderLayer);
     }
 
     waitForVisibleTiles(abort?: AbortSignal): Promise<boolean> {
@@ -487,16 +537,16 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
     }
 
     protected _drawTile(
-        ctx: CanvasRenderingContext2D,
-        tileData: DecodedTile,
+        _ctx: CanvasRenderingContext2D,
+        _tileData: DecodedTile,
         _targetZoom: number,
         _tileZ: number,
-        tileStartX: number,
-        tileStartY: number,
-        tileWidth: number,
-        tileHeight: number,
+        _tileStartX: number,
+        _tileStartY: number,
+        _tileWidth: number,
+        _tileHeight: number,
     ): void {
-        ctx.drawImage(tileData.patternCanvas, tileStartX, tileStartY, tileWidth, tileHeight);
+        // CanvasTileLayer keeps the visible tile cache synchronized with the map.
     }
 
     private async getDecodedTile(
@@ -563,27 +613,21 @@ class HikingPatternLayer extends L.CanvasTileLayer<DecodedTile> {
             const tileData: DecodedTile = {
                 cloudTile,
                 windTileInfo,
-                patternCanvas: document.createElement('canvas'),
-                cloudSubX,
-                cloudSubY,
-                cloudSubW,
-                cloudSubH,
+                pattern: {
+                    cloudR: cloudTile.channelR,
+                    cloudG: cloudTile.channelG,
+                    width: cloudTile.width,
+                    height: cloudTile.height,
+                    subX: cloudSubX,
+                    subY: cloudSubY,
+                    subW: cloudSubW,
+                    subH: cloudSubH,
+                    coverage: coverage === 'full' ? null : coverage,
+                },
                 cloudTileX: cloudTileInfo.x,
                 cloudTileY: cloudTileInfo.y,
                 cloudTileZ: cloudTileInfo.z,
             };
-            tileData.patternCanvas = await renderPatternTile({
-                channelR: cloudTile.channelR,
-                channelG: cloudTile.channelG,
-                width: cloudTile.width,
-                height: cloudTile.height,
-                subX: cloudSubX,
-                subY: cloudSubY,
-                subW: cloudSubW,
-                subH: cloudSubH,
-                tileRes: TILE_RES,
-                coverageMask: coverage === 'full' ? null : coverage,
-            });
             if (abort.aborted) {
                 throw new Error('aborted');
             }
