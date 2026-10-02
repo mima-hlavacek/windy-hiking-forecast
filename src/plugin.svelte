@@ -68,8 +68,6 @@
     let legendResizeObserver: ResizeObserver | null = null;
     let pendingLegendRedraw: number | null = null;
     let patternSyncId = 0;
-    let pendingForecastTimePatternSync: number | null = null;
-    let forecastTimeStoreListenerId: number | null = null;
 
     interface PickerValues {
         primaryLabel: string;
@@ -484,16 +482,16 @@
         cloudsParams: FullRenderParameters,
         windParams: FullRenderParameters,
         syncId: number,
-    ): Promise<boolean> {
+    ): Promise<void> {
         if (patternLayer?.renderKey === renderKey) {
             cancelPendingPatternSwap();
-            return false;
+            return;
         }
         if (pendingPatternLayer?.renderKey === renderKey) {
             if (pendingPatternSwapToken) {
                 pendingPatternSwapToken.syncId = syncId;
             }
-            return false;
+            return;
         }
 
         cancelPendingPatternSwap();
@@ -527,7 +525,7 @@
                 pendingPatternSwapToken = null;
             }
             nextLayer.remove();
-            return false;
+            return;
         }
 
         const previousLayer = patternLayer;
@@ -540,7 +538,6 @@
         if (previousLayer) {
             previousLayer.remove();
         }
-        return true;
     }
 
     async function syncPatternLayer(baseWeatherParams?: WeatherParameters | null) {
@@ -563,13 +560,14 @@
                 return;
             }
 
-            const replaced = await replacePatternLayer(
-                getRenderKey(cloudsParams, windParams),
+            const renderKey = getRenderKey(cloudsParams, windParams);
+            await replacePatternLayer(
+                renderKey,
                 cloudsParams,
                 windParams,
                 syncId,
             );
-            if (replaced) {
+            if (isMounted && patternLayer?.renderKey === renderKey) {
                 refreshOpenPicker();
             }
         } catch (error) {
@@ -577,27 +575,10 @@
         }
     }
 
-    function scheduleForecastTimePatternSync() {
-        if (pendingForecastTimePatternSync != null) {
-            return;
-        }
-
-        pendingForecastTimePatternSync = requestAnimationFrame(() => {
-            pendingForecastTimePatternSync = null;
-            void syncPatternLayer();
-        });
-    }
-
     function handleMetricChanged() {
         updateRainLegendLabels();
         refreshOpenPicker();
     }
-
-    export const paramsChanged = () => {
-        cachedInterpolator = null;
-        void syncPatternLayer();
-        refreshOpenPicker();
-    };
 
     onMount(() => {
         isMounted = true;
@@ -610,7 +591,6 @@
         updateRainLegendLabels();
 
         singleclick.on(name, showPickerData);
-        forecastTimeStoreListenerId = store.on('timestamp', scheduleForecastTimePatternSync);
         bcast.on('redrawFinished', syncPatternLayer);
         bcast.on('metricChanged', handleMetricChanged);
 
@@ -628,14 +608,6 @@
         if (pendingLegendRedraw != null) {
             cancelAnimationFrame(pendingLegendRedraw);
             pendingLegendRedraw = null;
-        }
-        if (pendingForecastTimePatternSync != null) {
-            cancelAnimationFrame(pendingForecastTimePatternSync);
-            pendingForecastTimePatternSync = null;
-        }
-        if (forecastTimeStoreListenerId != null) {
-            store.off(forecastTimeStoreListenerId);
-            forecastTimeStoreListenerId = null;
         }
         legendResizeObserver?.disconnect();
         legendResizeObserver = null;
