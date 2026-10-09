@@ -1,7 +1,7 @@
 {
-    "name": "windy-plugin-hiking-forecast",
-    "version": "0.1.5",
-    "description": "Windy plugin combining temperature, wind, clouds, and rain into a hiking forecast overlay.",
+    "name": "windy-plugin-second-layer-overlay",
+    "version": "0.1.0",
+    "description": "Windy plugin that draws a Windy weather layer as a dither pattern on top of the base overlay.",
     "main": "dist/plugin.min.js",
     "type": "module",
     "scripts": {
@@ -16,7 +16,7 @@
         "example06": "CONFIG=example06 rollup -w -c",
         "example07": "CONFIG=example07 rollup -w -c",
         "build:all-examples": "for number in 01 02 03 04 05 06; do CONFIG=example$number SERVE=false rollup -c; done",
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "test": "vitest run"
     },
     "repository": {
         "type": "git",
@@ -34,6 +34,10 @@
     },
     "homepage": "https://github.com/mima-hlavacek/windy-hiking-forecast#readme",
     "dependencies": {
-        "@windycom/plugin-devtools": "^3.0.3"
+        "@windycom/plugin-devtools": "^3.0.5"
+    },
+    "devDependencies": {
+        "fast-check": "^4.10.2",
+        "vitest": "^5.0.3"
     }
 }
