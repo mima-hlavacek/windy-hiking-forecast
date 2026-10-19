@@ -2,7 +2,7 @@ import type { ExternalPluginConfig } from '@windy/interfaces';
 
 const config: ExternalPluginConfig = {
     name: 'windy-plugin-second-layer-overlay',
-    version: '0.1.0',
+    version: '0.1.1',
     icon: '▒',
     title: 'Second Layer Overlay',
     description: 'Draws a Windy weather layer as a dither pattern on top of the base overlay.',
