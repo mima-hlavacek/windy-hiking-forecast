@@ -1,3 +1,4 @@
+import { BAYER_8X8, isDithered } from './bayer';
 import type { Metric } from '@windy/Metric';
 import type { MetricItem } from '@windy/d.ts.files/Metric.d';
 
@@ -26,10 +27,8 @@ export interface UnitConversion {
 // The shader's uniform arrays hold this many thresholds per pattern.
 export const MAX_THRESHOLDS = 16;
 
-// One cell of the 8×8 Bayer matrix.
-export const DENSITY_STEP = 1 / 64;
-
-export const MAX_DEFAULT_DENSITY = 0.3;
+// Of the Bayer matrix's 64 cells.
+export const MAX_DEFAULT_CELLS = 20;
 
 export const DEFAULT_COLOR = '#ffffff';
 
@@ -37,18 +36,18 @@ export const DEFAULT_RAIN_COLOR = '#000000';
 
 // Cloud cover in %.
 export const CLOUD_THRESHOLDS: ReadonlyArray<Threshold> = [
-    { from: 10, density: 0.1 },
-    { from: 59, density: 0.2 },
-    { from: 89, density: 0.3 },
+    { from: 10, density: 1 / 64 },
+    { from: 59, density: 2 / 64 },
+    { from: 89, density: 3 / 64 },
 ];
 
 // Rain in mm.
 export const RAIN_THRESHOLDS: ReadonlyArray<Threshold> = [
-    { from: 0.5, density: 0.1 },
-    { from: 2, density: 0.15 },
-    { from: 5, density: 0.2 },
-    { from: 10, density: 0.25 },
-    { from: 20, density: 0.3 },
+    { from: 0.5, density: 10 / 64 },
+    { from: 2, density: 15 / 64 },
+    { from: 5, density: 20 / 64 },
+    { from: 10, density: 25 / 64 },
+    { from: 20, density: 30 / 64 },
 ];
 
 // A forward conversion without a reverse table must equal k·x at these points. 0.37 and 1000
@@ -64,12 +63,13 @@ export function densityAt(thresholds: ReadonlyArray<Threshold>, value: number): 
     return below.at(-1)?.density ?? 0;
 }
 
-// Densities ramp linearly from 0 at the legend's lowest line to the maximum at its highest.
+// Densities ramp linearly, in whole cells, from 0 at the legend's lowest line to the maximum at its
+// highest.
 export function legendThresholds(lineValues: ReadonlyArray<number>): Threshold[] {
     const last = lineValues.length - 1;
     return lineValues.map((from, index) => ({
         from,
-        density: last === 0 ? MAX_DEFAULT_DENSITY : MAX_DEFAULT_DENSITY * (index / last),
+        density: cellsToDensity(MAX_DEFAULT_CELLS * (last === 0 ? 1 : index / last)),
     }));
 }
 
@@ -77,7 +77,7 @@ export function legendThresholds(lineValues: ReadonlyArray<number>): Threshold[]
 export function categoryThresholds(bounds: ReadonlyArray<number>): Threshold[] {
     return bounds.map((from, index) => ({
         from,
-        density: MAX_DEFAULT_DENSITY * ((index + 1) / bounds.length),
+        density: cellsToDensity(MAX_DEFAULT_CELLS * ((index + 1) / bounds.length)),
     }));
 }
 
@@ -211,11 +211,22 @@ export function withDensity(
     index: number,
     density: number,
 ): Threshold[] {
-    const clamped = Math.min(1, Math.max(0, density));
     const edited = thresholds.map((threshold, i) =>
-        i === index ? { ...threshold, density: clamped } : threshold,
+        i === index ? { ...threshold, density } : threshold,
     );
     return sortedUniqueByFrom(edited);
+}
+
+// Densities are edited as the number of the Bayer matrix's 64 cells they draw, so that each value
+// is a different pattern and each of its 65 patterns has a value.
+export function cellsToDensity(cells: number): number {
+    return Math.min(BAYER_8X8.length, Math.max(0, Math.round(cells))) / BAYER_8X8.length;
+}
+
+// Counted with the drawing rule, so that a stored density that isn't a whole number of cells shows
+// the cells it really draws.
+export function densityToCells(density: number): number {
+    return BAYER_8X8.filter(bayer => isDithered(bayer, density)).length;
 }
 
 // Ascending, and of rows with equal `from` only the last one is kept: they would apply to exactly

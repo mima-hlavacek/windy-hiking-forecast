@@ -5,7 +5,9 @@ import {
     MAX_THRESHOLDS,
     RAIN_THRESHOLDS,
     categoryThresholds,
+    cellsToDensity,
     densityAt,
+    densityToCells,
     isInvertible,
     legendThresholds,
     metricIsInvertible,
@@ -58,12 +60,12 @@ function shown(thresholds: ReadonlyArray<Threshold>, conversion: UnitConversion)
 
 describe('densityAt', () => {
     it('gives a value the density of the highest threshold strictly below it', () => {
-        const clouds = [0, 10, 10.5, 59, 60, 89, 89.5, 100].map(v =>
-            densityAt(CLOUD_THRESHOLDS, v),
+        const clouds = [0, 10, 10.5, 59, 60, 89, 89.5, 100].map(
+            v => densityAt(CLOUD_THRESHOLDS, v) * 64,
         );
-        expect(clouds).toEqual([0, 0, 0.1, 0.1, 0.2, 0.2, 0.3, 0.3]);
-        const rain = [0, 0.5, 0.6, 2, 2.1, 20, 25].map(v => densityAt(RAIN_THRESHOLDS, v));
-        expect(rain).toEqual([0, 0, 0.1, 0.1, 0.15, 0.25, 0.3]);
+        expect(clouds).toEqual([0, 0, 1, 1, 2, 2, 3, 3]);
+        const rain = [0, 0.5, 0.6, 2, 2.1, 20, 25].map(v => densityAt(RAIN_THRESHOLDS, v) * 64);
+        expect(rain).toEqual([0, 0, 10, 10, 15, 25, 30]);
     });
 
     it('gives no pattern for NaN and no thresholds', () => {
@@ -73,7 +75,7 @@ describe('densityAt', () => {
 
     it('does not depend on the order of the thresholds', () => {
         const shuffled = [CLOUD_THRESHOLDS[2], CLOUD_THRESHOLDS[0], CLOUD_THRESHOLDS[1]];
-        expect([5, 20, 70, 95].map(v => densityAt(shuffled, v))).toEqual([0, 0.1, 0.2, 0.3]);
+        expect([5, 20, 70, 95].map(v => densityAt(shuffled, v) * 64)).toEqual([0, 1, 2, 3]);
     });
 
     it('lets the last of equal thresholds win, like the shader', () => {
@@ -104,25 +106,21 @@ describe('densityAt', () => {
 });
 
 describe('default thresholds', () => {
-    it('ramps legend densities from 0 at the lowest line to 0.3 at the highest', () => {
+    it('ramps legend densities in whole cells from 0 at the lowest line to 20 at the highest', () => {
         const thresholds = legendThresholds([252, 262, 272, 282, 292, 302, 313]);
         expect(thresholds.map(({ from }) => from)).toEqual([252, 262, 272, 282, 292, 302, 313]);
-        expect(thresholds[0].density).toBe(0);
-        expect(thresholds[3].density).toBeCloseTo(0.15);
-        expect(thresholds[6].density).toBe(0.3);
+        expect(thresholds.map(({ density }) => density * 64)).toEqual([0, 3, 7, 10, 13, 17, 20]);
     });
 
     it('gives a single legend line the maximum density', () => {
-        expect(legendThresholds([5])).toEqual([{ from: 5, density: 0.3 }]);
+        expect(legendThresholds([5])).toEqual([{ from: 5, density: 20 / 64 }]);
     });
 
     it('makes every category visible and the last one the densest', () => {
         const uv = categoryThresholds([0, 2, 5, 7, 10]);
         expect(uv.map(({ from }) => from)).toEqual([0, 2, 5, 7, 10]);
-        [0.06, 0.12, 0.18, 0.24, 0.3].forEach((density, i) => {
-            expect(uv[i].density).toBeCloseTo(density);
-        });
-        expect(categoryThresholds([0.7, 1]).map(({ density }) => density)).toEqual([0.15, 0.3]);
+        expect(uv.map(({ density }) => density * 64)).toEqual([4, 8, 12, 16, 20]);
+        expect(categoryThresholds([0.7, 1]).map(({ density }) => density * 64)).toEqual([10, 20]);
     });
 });
 
@@ -271,12 +269,6 @@ describe('editing thresholds', () => {
         expect(withoutThreshold(rows(5), 0)).toEqual(rows(5));
     });
 
-    it('clamps densities to 0…1', () => {
-        expect(withDensity(temps, 1, 0.5)[1].density).toBe(0.5);
-        expect(withDensity(temps, 1, 1.5)[1].density).toBe(1);
-        expect(withDensity(temps, 1, -0.2)[1].density).toBe(0);
-    });
-
     it('keeps only the last of rows with equal values, in ascending order', () => {
         const equal = [
             { from: 2, density: 0.1 },
@@ -291,5 +283,32 @@ describe('editing thresholds', () => {
                 expect(result).toEqual([...new Set(froms)].sort((a, b) => a - b));
             }),
         );
+    });
+});
+
+describe('density cells', () => {
+    it('read back every cell count unchanged', () => {
+        fc.assert(
+            fc.property(fc.integer({ min: 0, max: 64 }), cells => {
+                expect(densityToCells(cellsToDensity(cells))).toBe(cells);
+            }),
+        );
+    });
+
+    it('round to whole cells and clamp to 0…1', () => {
+        expect(cellsToDensity(19.6)).toBe(20 / 64);
+        expect(cellsToDensity(100)).toBe(1);
+        expect(cellsToDensity(-3)).toBe(0);
+        fc.assert(
+            fc.property(fc.double({ noNaN: true }), cells => {
+                const density = cellsToDensity(cells);
+                expect(density).toBeGreaterThanOrEqual(0);
+                expect(density).toBeLessThanOrEqual(1);
+            }),
+        );
+    });
+
+    it('count the cells a density between whole cells draws', () => {
+        expect([0, 0.001, 0.3, 0.999, 1].map(densityToCells)).toEqual([0, 1, 20, 64, 64]);
     });
 });

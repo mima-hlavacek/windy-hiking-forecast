@@ -57,20 +57,21 @@
                         {:else}
                             <span class="slo-editor-category">{row.name}</span>
                         {/if}
-                        <input
-                            type="range"
-                            class="slo-editor-density"
-                            min="0"
-                            max="1"
-                            step={DENSITY_STEP}
-                            value={row.density}
-                            aria-label="{group.label} density, {row.name}"
-                            aria-valuetext="{Math.round(row.density * 100)} %"
-                            on:input={event =>
-                                previewDensity(group, i, event.currentTarget.valueAsNumber)}
-                            on:change={event =>
-                                saveDensity(group, i, event.currentTarget.valueAsNumber)}
-                        />
+                        <label class="slo-editor-value slo-editor-density">
+                            <input
+                                type="number"
+                                class="slo-editor-number slo-editor-cells"
+                                min="0"
+                                max="64"
+                                step="1"
+                                value={densityToCells(row.density)}
+                                aria-label="{group.label} density in sixty-fourths, {row.name}"
+                                title="Cells drawn of every 64"
+                                on:change={event => saveDensity(group, i, event.currentTarget)}
+                                on:wheel={event => event.currentTarget.blur()}
+                            />
+                            /64
+                        </label>
                         <canvas
                             class="slo-editor-swatch"
                             aria-hidden="true"
@@ -116,7 +117,8 @@
     import { patternsOf } from './catalogue';
     import { ditherCanvas } from './ditherCanvas';
     import {
-        DENSITY_STEP,
+        cellsToDensity,
+        densityToCells,
         roundToPrecision,
         toBase,
         toDisplay,
@@ -297,12 +299,16 @@
         save(group.pattern, { thresholds: withoutThreshold(group.set.thresholds, index) });
     }
 
-    function previewDensity(group: Group, index: number, density: number) {
-        const thresholds = withDensity(group.set.thresholds, index, density);
-        dispatch('preview', withPattern(sets, group.pattern, { ...group.set, thresholds }));
-    }
-
-    function saveDensity(group: Group, index: number, density: number) {
+    // A density doesn't move rows, so unlike a threshold it can be saved on every `change`.
+    function saveDensity(group: Group, index: number, input: HTMLInputElement) {
+        const shown = densityToCells(group.rows[index].density);
+        const density = cellsToDensity(input.valueAsNumber);
+        // Svelte leaves the input alone when the row's cell count doesn't change, so an emptied
+        // field, or a value that rounds or clamps to the current one, is put back here.
+        if (!Number.isFinite(density) || densityToCells(density) === shown) {
+            input.value = String(shown);
+            return;
+        }
         const thresholds = withDensity(group.set.thresholds, index, density);
         save(
             group.pattern,
@@ -466,11 +472,13 @@
         opacity: 0.9;
     }
 
+    /* Pushed next to the swatch, which shows the density it sets. */
     .slo-editor-density {
-        flex: 1 1 auto;
-        min-width: 40px;
-        height: 14px;
-        margin: 0;
+        margin-left: auto;
+    }
+
+    .slo-editor-cells {
+        width: 3.5em;
     }
 
     .slo-editor-swatch {

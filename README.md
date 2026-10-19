@@ -26,15 +26,19 @@ layer.
   chosen model offers. A level a model doesn't offer falls back to the surface, as in Windy.
 - **Legend:** one bar per pattern, with ticks in your units.
 - **Thresholds** (collapsible, starts collapsed on phones and tablets): each row reads "above
-  _value_" and has a density slider. A pixel gets the density of the highest threshold it exceeds.
-    - A typed value applies on Enter or when the field loses focus. A value equal to another row's
-      replaces that row.
+  _value_" and has a density, next to a swatch of its pattern. A pixel gets the density of the
+  highest threshold it exceeds.
+    - A density is the number of cells drawn of every 64, from 0 to 64: the pattern is an 8×8
+      ordered dither, so each number is a different pattern.
+    - A typed value or density applies on Enter or when the field loses focus. A value equal to
+      another row's replaces that row.
     - You can add and remove rows (up to 16), and each pattern's colour can be changed.
     - Categorical layers have one row per category instead.
     - "Reset to defaults" restores the selected layer's thresholds, densities and colours.
 
-The default thresholds come from Windy's legend for the layer, with densities rising from 0 to 0.3.
-The clouds-and-rain layer defaults to 10 / 59 / 89 % clouds and 0.5 / 2 / 5 / 10 / 20 mm rain.
+The default thresholds come from Windy's legend for the layer, with densities rising from 0 to
+20/64. The clouds-and-rain layer defaults to 10 / 59 / 89 % clouds at densities of 1 / 2 / 3, and
+0.5 / 2 / 5 / 10 / 20 mm rain at densities of 10 / 15 / 20 / 25 / 30.
 
 Thresholds belong to a layer, not to a level. Windy's legends fit surface values, so upper levels
 may need edited thresholds: with the defaults, temperature at 300 hPa lies below the first
