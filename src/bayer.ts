@@ -20,3 +20,11 @@ export function getBayerValue(x: number, y: number): number {
 export function isDithered(bayer: number, density: number): boolean {
     return bayer < density;
 }
+
+// The side of a dither cell in device pixels, shared by the shader and the legend: about one CSS
+// pixel, but whole, so that every cell is equally wide. Cells of exactly one CSS pixel would span
+// 2 or 3 device pixels in turn on the fractional ratios of most phones, which distorts the pattern
+// into moiré.
+export function ditherCellSize(): number {
+    return Math.max(1, Math.round(devicePixelRatio));
+}

@@ -1,4 +1,4 @@
-import { BAYER_8X8 } from './bayer';
+import { BAYER_8X8, ditherCellSize } from './bayer';
 import { MAX_THRESHOLDS, sortedUniqueByFrom } from './thresholds';
 import { MAX_CODE, MIN_VALID_WEIGHT } from './tileDecoding';
 import type { DitherSets, PatternSet } from './thresholds';
@@ -47,7 +47,7 @@ uniform vec2 u_secondaryRange;
 uniform bool u_hasCoverage;
 uniform bool u_vector;
 uniform float u_opacity;
-uniform float u_pixelRatio;
+uniform float u_cellSize;
 uniform float u_primaryFrom[MAX_THRESHOLDS];
 uniform float u_primaryDensity[MAX_THRESHOLDS];
 uniform int u_primaryCount;
@@ -108,8 +108,9 @@ void main() {
     float primary = secondary > 0.0 ? 0.0 :
         densityAt(value, u_primaryFrom, u_primaryDensity, u_primaryCount);
 
-    // Keep dither cells aligned to display pixels as map tiles scale during zoom.
-    vec2 screenPixel = floor(gl_FragCoord.xy / u_pixelRatio);
+    // MapLibre sizes the framebuffer at devicePixelRatio, so its pixels are device pixels. Cells
+    // taken from the screen rather than the tile also stay put as map tiles scale during zoom.
+    vec2 screenPixel = floor(gl_FragCoord.xy / u_cellSize);
     vec4 bayerTexel = texture2D(u_bayer, (mod(screenPixel, 8.0) + 0.5) / 8.0);
     float bayer = floor(bayerTexel.r * 255.0 + 0.5) / 64.0;
 
@@ -135,7 +136,7 @@ const UNIFORM_NAMES = [
     'u_hasCoverage',
     'u_vector',
     'u_opacity',
-    'u_pixelRatio',
+    'u_cellSize',
 ] as const;
 
 export class PatternShader {
@@ -205,11 +206,7 @@ export class PatternShader {
         gl.vertexAttribPointer(this.position, 2, gl.FLOAT, false, 0, 0);
         gl.uniformMatrix4fv(uniforms.u_matrix, false, matrix);
         gl.uniform1f(uniforms.u_opacity, opacity);
-        const canvas = gl.canvas as HTMLCanvasElement;
-        gl.uniform1f(
-            uniforms.u_pixelRatio,
-            gl.drawingBufferWidth / (canvas.clientWidth || gl.drawingBufferWidth),
-        );
+        gl.uniform1f(uniforms.u_cellSize, ditherCellSize());
         gl.uniform1i(uniforms.u_data, 0);
         gl.uniform1i(uniforms.u_coverage, 1);
         gl.uniform1i(uniforms.u_bayer, 2);
