@@ -106,21 +106,30 @@ describe('densityAt', () => {
 });
 
 describe('default thresholds', () => {
-    it('ramps legend densities in whole cells from 0 at the lowest line to 20 at the highest', () => {
+    it('adds one cell per legend step, starting at zero', () => {
         const thresholds = legendThresholds([252, 262, 272, 282, 292, 302, 313]);
         expect(thresholds.map(({ from }) => from)).toEqual([252, 262, 272, 282, 292, 302, 313]);
-        expect(thresholds.map(({ density }) => density * 64)).toEqual([0, 3, 7, 10, 13, 17, 20]);
+        expect(thresholds.map(({ density }) => density * 64)).toEqual([0, 1, 2, 3, 4, 5, 6]);
     });
 
-    it('gives a single legend line the maximum density', () => {
-        expect(legendThresholds([5])).toEqual([{ from: 5, density: 20 / 64 }]);
+    it('keeps cell increments independent of the number of legend lines', () => {
+        fc.assert(
+            fc.property(fc.array(fc.integer(), { maxLength: MAX_THRESHOLDS }), values => {
+                const scalar = legendThresholds(values);
+                const categorical = categoryThresholds(values);
+                expect(scalar.map(({ from }) => from)).toEqual(values);
+                expect(categorical.map(({ from }) => from)).toEqual(values);
+                scalar.forEach(({ density }, index) => expect(density * 64).toBe(index));
+                categorical.forEach(({ density }, index) => expect(density * 64).toBe(index + 1));
+            }),
+        );
     });
 
     it('makes every category visible and the last one the densest', () => {
         const uv = categoryThresholds([0, 2, 5, 7, 10]);
         expect(uv.map(({ from }) => from)).toEqual([0, 2, 5, 7, 10]);
-        expect(uv.map(({ density }) => density * 64)).toEqual([4, 8, 12, 16, 20]);
-        expect(categoryThresholds([0.7, 1]).map(({ density }) => density * 64)).toEqual([10, 20]);
+        expect(uv.map(({ density }) => density * 64)).toEqual([1, 2, 3, 4, 5]);
+        expect(categoryThresholds([0.7, 1]).map(({ density }) => density * 64)).toEqual([1, 2]);
     });
 });
 

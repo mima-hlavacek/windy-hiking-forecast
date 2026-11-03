@@ -36,8 +36,9 @@ layer.
     - Categorical layers have one row per category instead.
     - "Reset to defaults" restores the selected layer's thresholds, densities and colours.
 
-The default thresholds come from Windy's legend for the layer, with densities rising from 0 to
-20/64. The clouds-and-rain layer defaults to 10 / 59 / 89 % clouds at densities of 1 / 2 / 3, and
+The default thresholds come from Windy's legend for the layer, with densities rising by one cell
+per legend step, starting at 0/64. Categorical layers start at 1/64 and add one cell per category.
+The clouds-and-rain layer defaults to 10 / 59 / 89 % clouds at densities of 1 / 2 / 3, and
 0.5 / 2 / 5 / 10 / 20 mm rain at densities of 10 / 15 / 20 / 25 / 30.
 
 Thresholds belong to a layer, not to a level. Windy's legends fit surface values, so upper levels
@@ -71,7 +72,13 @@ shows as "-". The detail button opens Windy's forecast for that location.
 
 ## Persistence
 
-The selected layer and your changes are saved in the browser's local storage under the key
+The **Settings** section below Thresholds offers **Remember last second layer** and
+**Remember last base layer**, both on by default. On plugin startup, these restore the last
+dithered layer and base overlay respectively. With remembering disabled, the second layer starts
+with clouds and rain, and the base overlay stays on Windy's current selection. These options
+take effect on the next startup; changing them leaves the displayed layers in place.
+
+The last layers, these preferences and your changes are saved in the browser's local storage under the key
 `windy-plugin-second-layer-overlay:settings`. Changing a threshold or a density saves all of that
 pattern's thresholds and densities, and changing a colour saves only the colour. Whatever isn't
 saved keeps its default, so a pattern that was only recoloured still takes its thresholds from

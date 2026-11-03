@@ -22,6 +22,9 @@ export interface OverlayOverride {
 export interface StoredSettings {
     version: 1;
     selected: OverlayId;
+    baseOverlay?: OverlayId;
+    rememberSecondLayer: boolean;
+    rememberBaseLayer: boolean;
     overrides: Partial<Record<OverlayId, OverlayOverride>>;
 }
 
@@ -44,12 +47,19 @@ export function parseSettings(
     raw: unknown,
     entryFor: EntryLookup,
     levels: ReadonlyArray<LevelId>,
+    isBaseOverlay: (overlay: string) => boolean,
 ): StoredSettings {
     if (!isRecord(raw) || raw.version !== 1) {
         if (raw !== null) {
             warn('settings', raw);
         }
-        return { version: 1, selected: DEFAULT_SELECTED, overrides: {} };
+        return {
+            version: 1,
+            selected: DEFAULT_SELECTED,
+            overrides: {},
+            rememberSecondLayer: true,
+            rememberBaseLayer: true,
+        };
     }
     const selected = field(raw, 'selected', 'settings', value =>
         typeof value === 'string' && entryFor(value) ? (value as OverlayId) : undefined,
@@ -57,7 +67,30 @@ export function parseSettings(
     const overrides = field(raw, 'overrides', 'settings', (value, at) =>
         isRecord(value) ? parseOverrides(value, entryFor, levels, at) : undefined,
     );
-    return { version: 1, selected: selected ?? DEFAULT_SELECTED, overrides: overrides ?? {} };
+    const baseOverlay = field(raw, 'baseOverlay', 'settings', value =>
+        typeof value === 'string' && isBaseOverlay(value) ? (value as OverlayId) : undefined,
+    );
+    const booleanField = (key: string) =>
+        field(raw, key, 'settings', value => (typeof value === 'boolean' ? value : undefined)) ??
+        true;
+    return definedOnly({
+        version: 1 as const,
+        selected: selected ?? DEFAULT_SELECTED,
+        baseOverlay,
+        rememberSecondLayer: booleanField('rememberSecondLayer'),
+        rememberBaseLayer: booleanField('rememberBaseLayer'),
+        overrides: overrides ?? {},
+    });
+}
+
+export function startupLayers(settings: StoredSettings): {
+    selected: OverlayId;
+    baseOverlay: OverlayId | undefined;
+} {
+    return {
+        selected: settings.rememberSecondLayer ? settings.selected : DEFAULT_SELECTED,
+        baseOverlay: settings.rememberBaseLayer ? settings.baseOverlay : undefined,
+    };
 }
 
 // Returns fresh objects, so editing the result never changes the defaults.

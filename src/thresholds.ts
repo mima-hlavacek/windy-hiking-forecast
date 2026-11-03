@@ -27,9 +27,6 @@ export interface UnitConversion {
 // The shader's uniform arrays hold this many thresholds per pattern.
 export const MAX_THRESHOLDS = 16;
 
-// Of the Bayer matrix's 64 cells.
-export const MAX_DEFAULT_CELLS = 20;
-
 export const DEFAULT_COLOR = '#ffffff';
 
 export const DEFAULT_RAIN_COLOR = '#000000';
@@ -63,13 +60,11 @@ export function densityAt(thresholds: ReadonlyArray<Threshold>, value: number): 
     return below.at(-1)?.density ?? 0;
 }
 
-// Densities ramp linearly, in whole cells, from 0 at the legend's lowest line to the maximum at its
-// highest.
+// Each legend step adds one of the Bayer matrix's 64 cells.
 export function legendThresholds(lineValues: ReadonlyArray<number>): Threshold[] {
-    const last = lineValues.length - 1;
     return lineValues.map((from, index) => ({
         from,
-        density: cellsToDensity(MAX_DEFAULT_CELLS * (last === 0 ? 1 : index / last)),
+        density: cellsToDensity(index),
     }));
 }
 
@@ -77,7 +72,7 @@ export function legendThresholds(lineValues: ReadonlyArray<number>): Threshold[]
 export function categoryThresholds(bounds: ReadonlyArray<number>): Threshold[] {
     return bounds.map((from, index) => ({
         from,
-        density: cellsToDensity(MAX_DEFAULT_CELLS * ((index + 1) / bounds.length)),
+        density: cellsToDensity(index + 1),
     }));
 }
 

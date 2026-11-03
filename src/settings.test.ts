@@ -1,6 +1,13 @@
 import fc from 'fast-check';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseSettings, resolveSets, withOverride, withSource, withoutOverrides } from './settings';
+import {
+    parseSettings,
+    resolveSets,
+    startupLayers,
+    withOverride,
+    withSource,
+    withoutOverrides,
+} from './settings';
 import {
     CLOUD_THRESHOLDS,
     MAX_THRESHOLDS,
@@ -30,14 +37,25 @@ const catalogue = new Map<string, NonNullable<ReturnType<EntryLookup>>>([
 const LEVELS: ReadonlyArray<LevelId> = ['surface', '100m', '975h', '850h', '500h', '10h'];
 
 function parse(raw: unknown): StoredSettings {
-    return parseSettings(raw, overlay => catalogue.get(overlay), LEVELS);
+    return parseSettings(
+        raw,
+        overlay => catalogue.get(overlay),
+        LEVELS,
+        overlay => catalogue.has(overlay) || overlay === 'radar',
+    );
 }
 
 function stored(overrides: unknown, selected: unknown = 'temp'): unknown {
     return { version: 1, selected, overrides };
 }
 
-const defaults: StoredSettings = { version: 1, selected: 'clouds', overrides: {} };
+const defaults: StoredSettings = {
+    version: 1,
+    selected: 'clouds',
+    overrides: {},
+    rememberSecondLayer: true,
+    rememberBaseLayer: true,
+};
 
 beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -50,6 +68,13 @@ afterEach(() => {
 describe('parseSettings', () => {
     it('starts from the defaults when nothing is stored', () => {
         expect(parse(null)).toEqual(defaults);
+        expect(console.warn).not.toHaveBeenCalled();
+    });
+
+    it('keeps existing settings and enables remembering when preferences are absent', () => {
+        const overrides = { temp: { primary: { color: '#123456' } } };
+        expect(parse(stored(overrides))).toEqual({ ...defaults, selected: 'temp', overrides });
+        expect(startupLayers(parse(null))).toEqual({ selected: 'clouds', baseOverlay: undefined });
         expect(console.warn).not.toHaveBeenCalled();
     });
 
@@ -223,6 +248,9 @@ describe('parseSettings', () => {
         const settings = fc.record({
             version: fc.constant(1 as const),
             selected: fc.constantFrom('temp' as const, 'uvindex' as const, 'clouds' as const),
+            baseOverlay: fc.constantFrom('temp' as const, 'radar' as const),
+            rememberSecondLayer: fc.boolean(),
+            rememberBaseLayer: fc.boolean(),
             overrides: fc.record(
                 {
                     temp: fc
@@ -246,6 +274,49 @@ describe('parseSettings', () => {
         );
         expect(console.warn).not.toHaveBeenCalled();
     });
+});
+
+describe('startup layers', () => {
+    it.each([
+        [true, true, 'temp', 'radar'],
+        [true, false, 'temp', undefined],
+        [false, true, 'clouds', 'radar'],
+        [false, false, 'clouds', undefined],
+    ] as const)(
+        'restores layers independently (%s, %s)',
+        (rememberSecondLayer, rememberBaseLayer, selected, baseOverlay) => {
+            const settings = parse({
+                ...defaults,
+                selected: 'temp',
+                baseOverlay: 'radar',
+                rememberSecondLayer,
+                rememberBaseLayer,
+            });
+            expect(startupLayers(settings)).toEqual({ selected, baseOverlay });
+        },
+    );
+
+    it.each(['removed-layer', 42, null])('ignores an invalid base overlay %s', baseOverlay => {
+        expect(parse({ ...defaults, baseOverlay }).baseOverlay).toBeUndefined();
+    });
+
+    it.each(['rememberSecondLayer', 'rememberBaseLayer'] as const)(
+        'defaults an invalid %s without discarding the other preference',
+        key => {
+            const settings = parse({
+                ...defaults,
+                rememberSecondLayer: false,
+                rememberBaseLayer: false,
+                [key]: 'false',
+            });
+            expect(settings[key]).toBe(true);
+            expect(
+                settings[
+                    key === 'rememberSecondLayer' ? 'rememberBaseLayer' : 'rememberSecondLayer'
+                ],
+            ).toBe(false);
+        },
+    );
 });
 
 describe('resolveSets', () => {

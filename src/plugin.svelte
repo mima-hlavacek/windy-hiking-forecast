@@ -40,6 +40,22 @@
     {:else}
         <div class="slo-notice">This Windy version offers no layer the plugin can draw</div>
     {/if}
+    <details class="slo-settings">
+        <summary>Settings</summary>
+        {#each rememberOptions as option (option.key)}
+            <label>
+                <input
+                    type="checkbox"
+                    checked={settings[option.key]}
+                    on:change={event => storeSettings({
+                        ...settings,
+                        [option.key]: event.currentTarget.checked,
+                    })}
+                />
+                {option.label}
+            </label>
+        {/each}
+    </details>
 </section>
 
 <script lang="ts">
@@ -75,6 +91,7 @@
         SETTINGS_KEY,
         parseSettings,
         resolveSets,
+        startupLayers,
         withOverride,
         withSelected,
         withSource,
@@ -129,10 +146,15 @@
     const { name } = config;
 
     const catalogue = buildCatalogue();
+    const rememberOptions = [
+        { key: 'rememberBaseLayer', label: 'Remember last base layer' },
+        { key: 'rememberSecondLayer', label: 'Remember last second layer' },
+    ] as const;
     let settings = loadSettings();
+    const startup = startupLayers(settings);
     // Undefined only when Windy's definitions changed so much that no overlay passes the
     // catalogue's rules; the panel then says so and the plugin draws nothing.
-    let entry: CatalogueEntry | undefined = entryFor(settings.selected) ?? catalogue.at(0);
+    let entry: CatalogueEntry | undefined = entryFor(startup.selected) ?? catalogue.at(0);
     let sets: DitherSets | undefined = entry && resolvedSets(entry);
     // The model and level the dithered layer is drawn from, as of the last sync.
     let ditheredSource: LayerSource | undefined =
@@ -166,6 +188,13 @@
 
     onMount(() => {
         isMounted = true;
+        if (startup.baseOverlay) {
+            store.set('overlay', startup.baseOverlay);
+        }
+        if (entry && entry.overlay !== settings.selected) {
+            storeSettings(withSelected(settings, entry.overlay));
+        }
+        rememberBaseOverlay();
 
         singleclick.on(name, showPickerData);
         bcast.on('redrawFinished', handleRedrawFinished);
@@ -174,6 +203,7 @@
         store.on('particlesAnim', refreshOpenPicker);
         store.on('mapCoords', handleMapMoved);
         store.on('visibleProducts', handleVisibleProducts);
+        store.on('overlay', rememberBaseOverlay);
         window.addEventListener('online', handleOnline);
 
         void syncPatternLayer(getCurrentWeatherParams());
@@ -190,10 +220,18 @@
         store.off('particlesAnim', refreshOpenPicker);
         store.off('mapCoords', handleMapMoved);
         store.off('visibleProducts', handleVisibleProducts);
+        store.off('overlay', rememberBaseOverlay);
         window.removeEventListener('online', handleOnline);
         hideMarker();
         removePatternLayers();
     });
+
+    function rememberBaseOverlay() {
+        const baseOverlay = store.get('overlay');
+        if (baseOverlay !== settings.baseOverlay) {
+            storeSettings({ ...settings, baseOverlay });
+        }
+    }
 
     function selectOverlay(overlay: string) {
         const selected = entryFor(overlay);
@@ -267,7 +305,11 @@
         ) {
             return true;
         }
-        return target instanceof HTMLButtonElement && (key === ' ' || key === 'Enter');
+        return (
+            (target instanceof HTMLButtonElement ||
+                (target instanceof HTMLElement && target.tagName === 'SUMMARY')) &&
+            (key === ' ' || key === 'Enter')
+        );
     }
 
     function handleRedrawFinished(params: WeatherParameters | FullRenderParameters) {
@@ -451,7 +493,7 @@
             // storage.get throws on corrupt JSON.
             console.warn('Second Layer Overlay: ignoring unreadable stored settings', error);
         }
-        return parseSettings(raw, entryFor, levels);
+        return parseSettings(raw, entryFor, levels, overlay => Object.hasOwn(overlays, overlay));
     }
 
     function storeSettings(next: StoredSettings) {
@@ -847,6 +889,22 @@
         margin-bottom: 6px;
         font-size: 11px;
         color: #f2c94c;
+    }
+
+    .slo-settings {
+        margin-top: 6px;
+        font-size: 11px;
+    }
+
+    .slo-settings summary {
+        cursor: pointer;
+    }
+
+    .slo-settings label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 4px;
     }
 
     :global(.slo-picker) {
