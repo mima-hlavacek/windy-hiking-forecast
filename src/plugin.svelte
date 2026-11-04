@@ -86,6 +86,7 @@
     import DitherLegend from './DitherLegend.svelte';
     import DitherTileLayer from './DitherTileLayer';
     import { sameSource } from './layerSource';
+    import { createPickerRows } from './pickerRows';
     import config from './pluginConfig';
     import {
         SETTINGS_KEY,
@@ -109,16 +110,11 @@
     import type { FullRenderParameters, LatLon, WeatherParameters } from '@windy/interfaces.d';
     import type { CatalogueEntry, OverlayId } from './catalogue';
     import type { LayerSource, ProductId } from './layerSource';
+    import type { PickerRow } from './pickerRows';
     import type { PatternOverride, SourceOverride, StoredSettings } from './settings';
     import type { DitherSets, PatternId } from './thresholds';
 
-    type PickerSourceId = 'base' | 'dithered' | 'wind';
-
-    interface PickerRow {
-        id: PickerSourceId;
-        label: string;
-        value: string;
-    }
+    type PickerSourceId = PickerRow['id'];
 
     // One picker row: its label is known at once, its value is sampled asynchronously.
     interface PickerSource {
@@ -174,6 +170,7 @@
 
     let marker: L.Marker | null = null;
     let pickerRows: PickerRow[] = [];
+    let renderPickerRows: ((rows: PickerRow[]) => void) | null = null;
     let pickerRequestId = 0;
     let pickerAbort: AbortController | null = null;
     let cachedInterpolator: CoordsInterpolationFun | null = null;
@@ -536,7 +533,7 @@
             label,
             value: previousRows.find(row => row.id === id && row.label === label)?.value ?? '-',
         }));
-        renderPickerRows();
+        renderPickerRows?.(pickerRows);
 
         // Each row shows its value as soon as it has one, so a slow source doesn't hold up the
         // others.
@@ -546,7 +543,7 @@
                     pickerRows = pickerRows.map((row, i) =>
                         i === index ? { ...row, value } : row,
                     );
-                    renderPickerRows();
+                    renderPickerRows?.(pickerRows);
                 }
             }),
         );
@@ -705,31 +702,6 @@
         return parts.join(' ');
     }
 
-    function renderPickerRows() {
-        const rowsEl = marker?.getElement()?.querySelector('[data-ref="rows"]');
-        if (!rowsEl) {
-            return;
-        }
-        rowsEl.replaceChildren(
-            ...pickerRows.map(({ label, value }) => {
-                const row = document.createElement('div');
-                row.className = 'slo-picker-row';
-                row.append(
-                    textSpan('slo-picker-label', label),
-                    textSpan('slo-picker-value', value),
-                );
-                return row;
-            }),
-        );
-    }
-
-    function textSpan(className: string, text: string): HTMLSpanElement {
-        const span = document.createElement('span');
-        span.className = className;
-        span.textContent = text;
-        return span;
-    }
-
     const flagIcon = new L.DivIcon({
         className: 'slo-picker',
         html: `
@@ -785,6 +757,8 @@
         });
 
         const el = newMarker.getElement();
+        const rowsEl = el?.querySelector<HTMLElement>('[data-ref="rows"]');
+        renderPickerRows = rowsEl ? createPickerRows(rowsEl) : null;
         const closeBtn = el?.querySelector<HTMLButtonElement>('[data-ref="close"]');
         for (const eventName of ['pointerdown', 'mousedown', 'touchstart']) {
             closeBtn?.addEventListener(eventName, e => e.stopPropagation());
@@ -820,6 +794,7 @@
             marker = null;
         }
         pickerRows = [];
+        renderPickerRows = null;
     }
 
     function scheduleDragUpdate(lat: number, lon: number) {
@@ -959,6 +934,10 @@
         display: flex;
         justify-content: space-between;
         gap: 12px;
+    }
+
+    :global(.slo-picker-row[hidden]) {
+        display: none;
     }
 
     :global(.slo-picker-label) {
