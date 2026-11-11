@@ -2,7 +2,7 @@ import type { ExternalPluginConfig } from '@windy/interfaces';
 
 const config: ExternalPluginConfig = {
     name: 'windy-plugin-second-layer-overlay',
-    version: '0.1.5',
+    version: '0.1.6',
     icon: '☰',
     title: 'Second Layer Overlay',
     description: 'Draws a second weather layer as an overlay. Example: View clouds (which include precipitation) over temperature (which includes wind particles) to know whether to go for a hike or read a book.',

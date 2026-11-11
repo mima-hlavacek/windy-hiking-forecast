@@ -9,6 +9,28 @@ export interface LayerSource {
     level: LevelId;
 }
 
+// What time a forecast step's value describes: the moment of the step (temperature, cloud cover),
+// or the period that ends at the step (rain totals, maximum gusts).
+export type ValueTime = 'instant' | 'periodEnd';
+
+// The time to draw a product with the forecast steps `steps` (ascending) at, for the selected
+// `timestamp`; null when the product has no forecast for it. Over a forecast base (`baseSteps`), the
+// dithered layer shows the step Windy shows for `timestamp`, as the base does. Radar and satellite
+// (null `baseSteps`) show the moment `timestamp`, so a layer of periods shows the period containing
+// it: the one ending at the first step at or after `timestamp`, rather than at the nearest step,
+// which may end before `timestamp`.
+export function forecastTime(
+    steps: ReadonlyArray<number>,
+    timestamp: number,
+    baseSteps: ReadonlyArray<number> | null,
+    valueTime: ValueTime,
+): number | null {
+    if (baseSteps === null && valueTime === 'periodEnd') {
+        return stepEndingPeriodAt(steps, timestamp);
+    }
+    return coversTime(steps, timestamp, baseSteps) ? timestamp : null;
+}
+
 // Whether a product with the forecast steps `steps` (ascending) can be shown at `timestamp`. Windy
 // draws the step nearest to any time it is given, so far from every step it would show stale data.
 // The product covers the time inside its steps, within half a step interval beyond its first or
@@ -66,6 +88,19 @@ export function modelOptions(
 
 export function sameSource(a: LayerSource, b: LayerSource): boolean {
     return a.product === b.product && a.level === b.level;
+}
+
+// The first step at or after `timestamp`, if the period it ends contains `timestamp`. A period is
+// taken to last one step interval (the following one for the first step); a longer period, such as
+// three hours of rain over hourly steps, contains `timestamp` then too.
+function stepEndingPeriodAt(steps: ReadonlyArray<number>, timestamp: number): number | null {
+    const index = steps.findIndex(candidate => candidate >= timestamp);
+    if (index === -1) {
+        return null;
+    }
+    const step = steps[index];
+    const interval = index > 0 ? step - steps[index - 1] : (steps[1] ?? step) - step;
+    return timestamp === step || timestamp > step - interval ? step : null;
 }
 
 function distanceToNearest(steps: ReadonlyArray<number>, timestamp: number): number {

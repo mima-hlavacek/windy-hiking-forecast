@@ -8,7 +8,7 @@ import { createFullRenderingParams } from '@windy/renderUtils';
 import { levelsData, overlays as menuOrder } from '@windy/rootScope';
 import { t } from '@windy/trans';
 import { categoryBounds } from './categoryBounds';
-import { coversTime, effectiveLevel, modelOptions } from './layerSource';
+import { effectiveLevel, forecastTime, modelOptions } from './layerSource';
 import {
     DEFAULT_COLOR,
     categoryThresholds,
@@ -26,7 +26,7 @@ import type { DiscreteLegend, Legend } from '@windy/d.ts.files/legends.d';
 import type { FullRenderParameters, WeatherParameters } from '@windy/interfaces.d';
 import type { ColorGradient, LoadedTranslations } from '@windy/types';
 import type { SearchRange } from './categoryBounds';
-import type { LayerSource, LevelId, ProductId } from './layerSource';
+import type { LayerSource, LevelId, ProductId, ValueTime } from './layerSource';
 import type { DitherKind, DitherSets, PatternId, PatternSet } from './thresholds';
 import type { NoDataRule, ValueSource } from './tileDecoding';
 
@@ -56,6 +56,7 @@ export interface CatalogueEntry {
     defaults: DitherSets;
     providers: ReadonlyArray<ProductId>; // the models that offer the overlay
     hasLevels: boolean; // whether Windy offers the overlay above the surface
+    valueTime: ValueTime;
 }
 
 // One pattern of the selected overlay, with what it shows and how it is drawn.
@@ -75,6 +76,11 @@ type AnyOverlay = (typeof overlays)[OverlayId];
 // its red channel holds a log-encoded amount (the `LOG` shader define), and its green channel the
 // precipitation type, sampled at the nearest value (its `interpolateNearestG`).
 const EXCLUDED_OVERLAYS: ReadonlyArray<OverlayId> = ['ccl', 'ptype'];
+
+// Overlays whose values describe the period ending at their forecast step: rain totals (Windy's
+// picker labels them "(3h)"), maximum gusts and lightning density. The clouds overlay is listed for
+// its rain; its cloud cover, from the same step, then shows up to one step after the selected time.
+const PERIOD_END_OVERLAYS: ReadonlyArray<OverlayId> = ['rain', 'clouds', 'gust', 'thunder'];
 
 const CLOUD_RAIN_OVERLAY: OverlayId = 'clouds';
 
@@ -153,7 +159,8 @@ export function particleSource(
     };
 }
 
-// Null when the source's model has no forecast for `timestamp`.
+// Null when the source's model has no forecast for `timestamp`. Windy draws the step nearest to the
+// time it is given, so passing a step's own time draws that step.
 export async function resolveRenderParams(
     entry: CatalogueEntry,
     base: WeatherParameters,
@@ -164,10 +171,12 @@ export async function resolveRenderParams(
         calendarOf(source.product),
         calendarOf(base.product),
     ]);
-    if (
-        !calendar ||
-        !coversTime(calendar.timestamps, timestamp, baseCalendar?.timestamps ?? null)
-    ) {
+    if (!calendar) {
+        return null;
+    }
+    const baseSteps = baseCalendar?.timestamps ?? null;
+    const time = forecastTime(calendar.timestamps, timestamp, baseSteps, entry.valueTime);
+    if (time === null) {
         return null;
     }
     // The weather parameters name the dithered overlay, model and level, which select the data
@@ -180,7 +189,7 @@ export async function resolveRenderParams(
             product: source.product,
             level: source.level,
         },
-        timestamp,
+        time,
     );
 }
 
@@ -237,6 +246,7 @@ function catalogueEntry(id: OverlayId): CatalogueEntry | null {
         ...patterns,
         providers: overlay2product[id] ?? [],
         hasLevels: overlay.hasMoreLevels ?? false,
+        valueTime: PERIOD_END_OVERLAYS.includes(id) ? 'periodEnd' : 'instant',
     };
 }
 

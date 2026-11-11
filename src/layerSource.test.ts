@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { coversTime, effectiveLevel, modelOptions } from './layerSource';
+import { coversTime, effectiveLevel, forecastTime, modelOptions } from './layerSource';
 import type { LevelId, ProductId } from './layerSource';
 
 const HOUR = 3600 * 1000;
@@ -79,6 +79,71 @@ describe('coversTime', () => {
         const timestamp = 72 * HOUR;
         expect(coversTime(iconD2, timestamp, ecmwf.concat(every(6, 54, 360)))).toBe(false);
         expect(coversTime(iconD2, timestamp, null)).toBe(false);
+    });
+});
+
+describe('forecastTime', () => {
+    const hourly = every(1, 1, 90);
+    const threeHourly = every(3, 93, 144);
+    const ecmwf = [...hourly, ...threeHourly, ...every(6, 150, 360)];
+
+    it.each([
+        ['between hourly steps', 12 + 10 / 60, 13],
+        ['at an hourly step', 13, 13],
+        ['between three-hourly steps', 100, 102],
+        ['just after a three-hourly step', 99.01, 102],
+        ['between six-hourly steps', 152, 156],
+        ['within an interval before the first step', 0.5, 1],
+    ])('over radar, shows a period %s by the step ending it', (_, at, step) => {
+        expect(forecastTime(ecmwf, at * HOUR, null, 'periodEnd')).toBe(step * HOUR);
+    });
+
+    it.each([
+        ['after the last step', 360.5],
+        ['more than an interval before the first step', -0.5],
+    ])('over radar, has no period %s', (_, at) => {
+        expect(forecastTime(ecmwf, at * HOUR, null, 'periodEnd')).toBeNull();
+    });
+
+    it('over radar, shows the first step at or after the time, within one step interval', () => {
+        fc.assert(
+            fc.property(steps, fc.integer({ min: -2e12, max: 2e12 }), (own, timestamp) => {
+                const time = forecastTime(own, timestamp, null, 'periodEnd');
+                const index = own.findIndex(step => step >= timestamp);
+                fc.pre(time !== null);
+                expect(time).toBe(own[index]);
+                const interval = index > 0 ? own[index] - own[index - 1] : (own[1] ?? 0) - own[0];
+                expect(time === timestamp || time - timestamp < interval).toBe(true);
+            }),
+        );
+    });
+
+    it('over radar, shows every step at its own time, and every time between steps', () => {
+        fc.assert(
+            fc.property(steps, fc.nat(), fc.double({ min: 0, max: 1, noNaN: true }), (own, i, at) => {
+                const index = i % own.length;
+                expect(forecastTime(own, own[index], null, 'periodEnd')).toBe(own[index]);
+                const timestamp = own[0] + at * (own[own.length - 1] - own[0]);
+                expect(forecastTime(own, timestamp, null, 'periodEnd')).not.toBeNull();
+            }),
+        );
+    });
+
+    it("over a forecast base, keeps the time, for Windy to pick the base's step", () => {
+        fc.assert(
+            fc.property(steps, fc.integer({ min: -2e12, max: 2e12 }), (own, timestamp) => {
+                expect(forecastTime(own, timestamp, own, 'periodEnd')).toBe(timestamp);
+                expect(forecastTime(own, timestamp, own, 'instant')).toBe(timestamp);
+            }),
+        );
+    });
+
+    it('over radar, keeps the time of instant values where the product covers it', () => {
+        expect(forecastTime(ecmwf, (12 + 10 / 60) * HOUR, null, 'instant')).toBe(
+            (12 + 10 / 60) * HOUR,
+        );
+        expect(forecastTime(ecmwf, 361 * HOUR, null, 'instant')).toBe(361 * HOUR);
+        expect(forecastTime(ecmwf, 364 * HOUR, null, 'instant')).toBeNull();
     });
 });
 
