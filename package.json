@@ -1,7 +1,7 @@
 {
-    "name": "windy-plugin-template",
-    "version": "5.1.0",
-    "description": "Template for developing Windy Plugins",
+    "name": "windy-plugin-second-layer-overlay",
+    "version": "0.1.5",
+    "description": "Windy plugin that draws a Windy weather layer as a dither pattern on top of the base overlay.",
     "main": "dist/plugin.min.js",
     "type": "module",
     "scripts": {
@@ -17,24 +17,29 @@
         "example07": "CONFIG=example07 rollup -w -c",
         "example08": "CONFIG=example08 rollup -w -c",
         "build:all-examples": "for number in 01 02 03 04 05 06; do CONFIG=example$number SERVE=false rollup -c; done",
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "test": "vitest run"
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/windycom/windy-plugin-template.git"
+        "url": "git+https://github.com/mima-hlavacek/windy-hiking-forecast.git"
     },
     "keywords": [
         "windy",
         "windy.com",
         "plugins"
     ],
-    "author": "Windyty, S.E.",
+    "author": "Míma Hlaváček",
     "license": "ISC",
     "bugs": {
-        "url": "https://github.com/windycom/windy-plugin-template/issues"
+        "url": "https://github.com/mima-hlavacek/windy-hiking-forecast/issues"
     },
-    "homepage": "https://docs.windy-plugins.com/",
+    "homepage": "https://github.com/mima-hlavacek/windy-hiking-forecast#readme",
     "dependencies": {
-        "@windycom/plugin-devtools": "^3.0.3"
+        "@windycom/plugin-devtools": "^3.0.5"
+    },
+    "devDependencies": {
+        "fast-check": "^4.10.2",
+        "jsdom": "^30.1.3",
+        "vitest": "^5.0.3"
     }
 }

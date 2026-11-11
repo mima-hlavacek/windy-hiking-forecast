@@ -11,6 +11,7 @@
         "resolveJsonModule": false,
         "sourceMap": false,
         "incremental": true,
+        "skipLibCheck": true,
         "noEmit": true,
         "alwaysStrict": true,
         "esModuleInterop": true,
